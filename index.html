@@ -56,7 +56,7 @@
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="./style.css?v=20261026_08">
+  <link rel="stylesheet" href="./style.css?v=20261026_09">
 </head>
 <body class="bg-[#f8fafd] text-gray-800 min-h-screen flex flex-col antialiased selection:bg-blue-100 selection:text-blue-900">
 
@@ -75,9 +75,13 @@
 
       <!-- Header Actions -->
       <div class="flex items-center gap-1.5">
-        <button id="installPwaBtn" type="button" class="hidden px-2.5 py-1.5 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 font-semibold text-xs transition-all items-center gap-1 shadow-2xs" title="הוסף למסך הבית בטלפון">
-          <i data-lucide="smartphone" class="w-4 h-4 text-blue-600"></i>
-          <span>התקן בנייד</span>
+        <button id="openQrHeaderBtn" type="button" class="px-2.5 py-1.5 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 font-semibold text-xs transition-all inline-flex items-center gap-1.5 shadow-2xs" title="סרוק קוד QR לפתיחה והגדרה אוטומטית בטלפון">
+          <i data-lucide="qr-code" class="w-4 h-4 text-blue-600"></i>
+          <span>העבר לנייד (QR)</span>
+        </button>
+        <button id="installPwaBtn" type="button" class="hidden px-2.5 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 font-semibold text-xs transition-all items-center gap-1 shadow-2xs" title="הוסף למסך הבית בטלפון">
+          <i data-lucide="smartphone" class="w-4 h-4 text-emerald-600"></i>
+          <span>הוסף למסך הבית</span>
         </button>
         <button id="openHistoryBtn" class="p-2 rounded-xl text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors relative" title="אירועים אחרונים שנוצרו">
           <i data-lucide="history" class="w-5 h-5"></i>
@@ -614,6 +618,47 @@
     </div>
   </div>
 
+  <!-- Mobile QR Setup Modal (חלון ייעודי לסריקת QR ופתיחה בנייד בלחיצה אחת) -->
+  <div id="mobileQrModal" class="hidden fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-gray-200 space-y-3.5 text-right">
+      <div class="flex items-center justify-between pb-2.5 border-b border-gray-100">
+        <div class="flex items-center gap-2">
+          <i data-lucide="qr-code" class="w-5 h-5 text-blue-600"></i>
+          <h3 class="text-sm font-bold text-gray-900">פתיחה והגדרה מהירה בנייד</h3>
+        </div>
+        <button id="closeQrModalBtn" type="button" class="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Status / Inline API Key prompt if missing -->
+      <div id="qrKeyStatusBanner" class="rounded-xl p-2.5 text-xs border">
+        <!-- Populated dynamically -->
+      </div>
+
+      <!-- Crisp QR Code Box -->
+      <div class="bg-gray-50 border border-gray-200 rounded-2xl p-4 flex flex-col items-center justify-center space-y-2">
+        <div id="dedicatedQrCanvas" class="bg-white p-3 rounded-xl shadow-xs border border-gray-100 flex items-center justify-center min-h-[210px] min-w-[210px]"></div>
+        <p class="text-[11px] font-semibold text-gray-700 text-center">
+          כוון את מצלמת הטלפון אל הקוד ולחץ על הקישור שיופיע
+        </p>
+      </div>
+
+      <!-- Copy Link & Instructions -->
+      <div class="space-y-2 text-xs">
+        <button id="copyDedicatedQrLinkBtn" type="button" class="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-sm transition-all flex items-center justify-center gap-2">
+          <i data-lucide="copy" class="w-4 h-4"></i>
+          <span>העתק קישור ישיר (לשליחה בוואטסאפ)</span>
+        </button>
+        <div class="bg-gray-50 rounded-xl p-2.5 border border-gray-100 text-[11px] text-gray-600 space-y-1">
+          <p class="font-bold text-gray-800">איך שומרים כאפליקציה בטלפון?</p>
+          <p>1. סרוק את הברקוד — הדף ייפתח בנייד עם המפתח והיומנים מוגדרים.</p>
+          <p>2. בטלפון, לחץ על <strong>"הוסף למסך הבית"</strong> בראש הדף (או דרך תפריט הדפדפן).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification with optional Undo button -->
   <div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 hidden px-4 py-2.5 rounded-xl bg-gray-900 text-white text-xs font-medium shadow-xl items-center gap-2.5 transition-all max-w-[90vw]">
     <i id="toastIcon" data-lucide="info" class="w-4 h-4 text-blue-400 shrink-0"></i>
@@ -625,6 +670,6 @@
   </div>
 
   <!-- App Logic -->
-  <script src="./app.js?v=20261026_08"></script>
+  <script src="./app.js?v=20261026_09"></script>
 </body>
 </html>

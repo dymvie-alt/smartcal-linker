@@ -1456,39 +1456,16 @@ function setupSettingsModal() {
     });
   }
 
-  // בניית קישור סנכרון מהיר למובייל (#setup=...)
-  function buildMagicSetupUrl() {
-    const currentKey = apiKeyInput.value.trim() || getApiKey();
-    if (!currentKey) {
-      showToast('נא להזין תחילה מפתח Gemini API לפני יצירת קישור סנכרון', 'alert-circle');
-      apiKeyInput.focus();
-      return null;
-    }
-    // שמירה מיידית של המפתח כדי שיהיה מסונכרן
-    localStorage.setItem('smartcal_api_key', currentKey);
-    const currentMod = modelSelect.value || getModel();
-    localStorage.setItem('smartcal_model', currentMod);
-
-    const payload = {
-      k: currentKey,
-      m: currentMod,
-      a: getStoredAccounts(),
-      c: currentAccountKey
-    };
-
-    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const baseUrl = isLocal
-      ? 'https://dymvie-alt.github.io/smartcal-linker/'
-      : (window.location.origin + window.location.pathname);
-    return `${baseUrl}#setup=${encoded}`;
-  }
-
   const copySetupLinkBtn = document.getElementById('copySetupLinkBtn');
   if (copySetupLinkBtn) {
     copySetupLinkBtn.addEventListener('click', () => {
-      const magicUrl = buildMagicSetupUrl();
-      if (!magicUrl) return;
+      const currentKey = apiKeyInput.value.trim() || getApiKey();
+      if (currentKey) localStorage.setItem('smartcal_api_key', currentKey);
+      const magicUrl = generateMagicSetupUrl(true);
+      if (!magicUrl) {
+        apiKeyInput.focus();
+        return;
+      }
       navigator.clipboard.writeText(magicUrl).then(() => {
         showToast('קישור ההגדרה הועתק! שלח לעצמך בוואטסאפ ופתח בנייד', 'check');
       }).catch(() => {
@@ -1498,45 +1475,175 @@ function setupSettingsModal() {
   }
 
   const toggleSetupQrBtn = document.getElementById('toggleSetupQrBtn');
-  const setupQrContainer = document.getElementById('setupQrContainer');
-  const qrCanvasWrapper = document.getElementById('qrCanvasWrapper');
-  if (toggleSetupQrBtn && setupQrContainer && qrCanvasWrapper) {
+  if (toggleSetupQrBtn) {
     toggleSetupQrBtn.addEventListener('click', () => {
-      if (!setupQrContainer.classList.contains('hidden')) {
-        setupQrContainer.classList.add('hidden');
-        return;
-      }
-      const magicUrl = buildMagicSetupUrl();
-      if (!magicUrl) return;
-
-      if (typeof window.qrcode === 'function') {
-        try {
-          const qr = window.qrcode(0, 'L');
-          qr.addData(magicUrl);
-          qr.make();
-          qrCanvasWrapper.innerHTML = qr.createSvgTag({ cellSize: 3, margin: 2, scalable: true });
-          const svgEl = qrCanvasWrapper.querySelector('svg');
-          if (svgEl) {
-            svgEl.style.width = '180px';
-            svgEl.style.height = '180px';
-          }
-          setupQrContainer.classList.remove('hidden');
-        } catch (err) {
-          console.error('QR generation error:', err);
-          showToast('הקישור ארוך מדי לקוד QR, השתמש בכפתור "העתק קישור הגדרה"', 'info');
-        }
-      } else {
-        showToast('ספריית ה-QR לא נטענה, השתמש בכפתור "העתק קישור הגדרה"', 'info');
-      }
+      const currentKey = apiKeyInput.value.trim() || getApiKey();
+      if (currentKey) localStorage.setItem('smartcal_api_key', currentKey);
+      modal.classList.add('hidden');
+      openDedicatedQrModal();
     });
   }
+}
+
+// בניית קישור סנכרון קומפקטי במיוחד (#setup=...) לקריאה מיידית במצלמת הנייד
+function generateMagicSetupUrl(requireKey = false) {
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const modelSelect = document.getElementById('modelSelect');
+  const currentKey = (apiKeyInput?.value?.trim()) || getApiKey();
+
+  if (requireKey && !currentKey) {
+    showToast('נא להזין תחילה מפתח Gemini API לפני יצירת קישור סנכרון', 'alert-circle');
+    return null;
+  }
+
+  if (currentKey) {
+    localStorage.setItem('smartcal_api_key', currentKey);
+  }
+  const currentMod = modelSelect?.value || getModel();
+  if (currentMod) {
+    localStorage.setItem('smartcal_model', currentMod);
+  }
+
+  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const baseUrl = isLocal
+    ? 'https://dymvie-alt.github.io/smartcal-linker/'
+    : (window.location.origin + window.location.pathname);
+
+  // בניית מטען (Payload) מינימלי כדי שברקוד ה-QR יהיה גדול, חד ונקרא בשבריר שנייה
+  const payload = {};
+  if (currentKey) payload.k = currentKey;
+  if (currentMod && currentMod !== 'gemini-3.8-flash') payload.m = currentMod;
+  if (currentAccountKey && currentAccountKey !== 'dim') payload.c = currentAccountKey;
+
+  const storedAccs = getStoredAccounts();
+  if (JSON.stringify(storedAccs) !== JSON.stringify(DEFAULT_ACCOUNTS)) {
+    payload.a = storedAccs;
+  }
+
+  if (Object.keys(payload).length === 0) {
+    return baseUrl;
+  }
+
+  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  return `${baseUrl}#setup=${encoded}`;
+}
+
+// פתיחת חלון ה-QR הייעודי בלחיצה אחת ורינדור ברקוד חד וברור
+function openDedicatedQrModal() {
+  const qrModal = document.getElementById('mobileQrModal');
+  if (!qrModal) return;
+
+  renderDedicatedQrCode();
+  qrModal.classList.remove('hidden');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderDedicatedQrCode() {
+  const banner = document.getElementById('qrKeyStatusBanner');
+  const canvasBox = document.getElementById('dedicatedQrCanvas');
+  if (!banner || !canvasBox) return;
+
+  const hasKey = !!getApiKey();
+  if (hasKey) {
+    banner.className = 'rounded-xl p-2.5 text-xs border bg-emerald-50 border-emerald-200 text-emerald-900 flex items-center gap-2';
+    banner.innerHTML = `
+      <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-600 shrink-0"></i>
+      <span><strong>מוכן לסריקה:</strong> הברקוד כולל את מפתח ה-API והיומנים שלך ויעביר אותם אוטומטית לנייד.</span>
+    `;
+  } else {
+    banner.className = 'rounded-xl p-2.5 text-xs border bg-amber-50 border-amber-200 text-amber-900 space-y-2';
+    banner.innerHTML = `
+      <p class="font-semibold flex items-center gap-1.5">
+        <i data-lucide="key" class="w-3.5 h-3.5 text-amber-600 shrink-0"></i>
+        <span>הדבק מפתח API כדי שיוגדר אוטומטית בסריקה:</span>
+      </p>
+      <div class="flex gap-1.5">
+        <input type="password" id="inlineQrApiKeyInput" dir="ltr" placeholder="AIzaSy..." class="flex-1 text-xs rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 font-mono text-gray-900 focus:outline-none focus:border-blue-500">
+        <button type="button" id="inlineQrSaveKeyBtn" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-[11px] shrink-0">שמור ועדכן QR</button>
+      </div>
+    `;
+    const inlineInput = banner.querySelector('#inlineQrApiKeyInput');
+    const inlineBtn = banner.querySelector('#inlineQrSaveKeyBtn');
+    if (inlineBtn && inlineInput) {
+      inlineBtn.addEventListener('click', () => {
+        const val = inlineInput.value.trim();
+        if (!val) {
+          showToast('נא להדביק מפתח API תקין', 'alert-circle');
+          return;
+        }
+        localStorage.setItem('smartcal_api_key', val);
+        const settingsKeyInput = document.getElementById('apiKeyInput');
+        if (settingsKeyInput) settingsKeyInput.value = val;
+        renderDedicatedQrCode();
+        showToast('המפתח נשמר והוטמע בברקוד ה-QR!', 'check');
+      });
+    }
+  }
+
+  const magicUrl = generateMagicSetupUrl(false);
+  if (typeof window.qrcode === 'function' && magicUrl) {
+    try {
+      const qr = window.qrcode(0, 'L');
+      qr.addData(magicUrl);
+      qr.make();
+      canvasBox.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+      const svgEl = canvasBox.querySelector('svg');
+      if (svgEl) {
+        svgEl.style.width = '200px';
+        svgEl.style.height = '200px';
+      }
+    } catch (err) {
+      console.error('QR generation error:', err);
+      canvasBox.innerHTML = '<p class="text-xs text-red-600 p-4">שגיאה ביצירת QR. השתמש בכפתור העתקת הקישור למטה.</p>';
+    }
+  }
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// שמירה וגיבוי של ההגדרות גם ב-CacheStorage כדי שאפליקציית מסך הבית בנייד תשתף אותן
+async function backupConfigToCacheStorage(payload) {
+  try {
+    if ('caches' in window) {
+      const cache = await caches.open('smartcal-config-backup-v1');
+      const res = new Response(JSON.stringify(payload), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+      await cache.put('/__smartcal_saved_config__', res);
+    }
+  } catch (e) {}
+}
+
+async function restoreConfigFromCacheStorageIfNeeded() {
+  try {
+    if (!getApiKey() && 'caches' in window) {
+      const cache = await caches.open('smartcal-config-backup-v1');
+      const res = await cache.match('/__smartcal_saved_config__');
+      if (res) {
+        const payload = await res.json();
+        if (payload && payload.k) {
+          localStorage.setItem('smartcal_api_key', payload.k);
+          if (payload.m) localStorage.setItem('smartcal_model', payload.m);
+          if (Array.isArray(payload.a) && payload.a.length > 0) saveStoredAccounts(payload.a);
+          if (payload.c) {
+            currentAccountKey = payload.c;
+            localStorage.setItem('smartcal_account', payload.c);
+            renderAccountButtons();
+          }
+        }
+      }
+    }
+  } catch (e) {}
 }
 
 // קליטת קישור סנכרון מהיר (#setup=...) בטעינת הדף וניקוי מיידי משורת הכתובת
 function checkMagicSetupHash() {
   try {
     const hash = window.location.hash;
-    if (!hash || !hash.startsWith('#setup=')) return;
+    if (!hash || !hash.startsWith('#setup=')) {
+      restoreConfigFromCacheStorageIfNeeded();
+      return;
+    }
 
     const encoded = hash.slice('#setup='.length);
     const jsonStr = decodeURIComponent(escape(atob(encoded)));
@@ -1552,6 +1659,9 @@ function checkMagicSetupHash() {
         currentAccountKey = payload.c;
         localStorage.setItem('smartcal_account', payload.c);
       }
+
+      // גיבוי ל-CacheStorage כדי שגם פתיחה ממסך הבית בנייד תכיר את המפתח מיד
+      backupConfigToCacheStorage(payload);
 
       // מחיקה מיידית של ה-Hash משורת הכתובת ומההיסטוריה למניעת חשיפת המפתח
       history.replaceState(null, '', window.location.pathname + window.location.search);
@@ -1598,14 +1708,43 @@ function checkSharedIncomingContent() {
   }
 }
 
-// תמיכה בהתקנת PWA במסך הבית והדבקת תמונה ישירה (Ctrl+V / הדבקת צילום מסך)
+// ניהול חלון ה-QR, התקנת PWA בנייד בלבד, והדבקת תמונה ישירה (Ctrl+V)
 function setupPwaInstallAndGlobalPaste() {
+  const openQrHeaderBtn = document.getElementById('openQrHeaderBtn');
+  const qrModal = document.getElementById('mobileQrModal');
+  const closeQrModalBtn = document.getElementById('closeQrModalBtn');
+  const copyDedicatedQrLinkBtn = document.getElementById('copyDedicatedQrLinkBtn');
   const installBtn = document.getElementById('installPwaBtn');
-  let deferredPrompt = null;
 
-  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (openQrHeaderBtn) {
+    openQrHeaderBtn.addEventListener('click', openDedicatedQrModal);
+  }
+  if (closeQrModalBtn && qrModal) {
+    closeQrModalBtn.addEventListener('click', () => qrModal.classList.add('hidden'));
+  }
+  if (qrModal) {
+    qrModal.addEventListener('click', (e) => {
+      if (e.target === qrModal) qrModal.classList.add('hidden');
+    });
+  }
+  if (copyDedicatedQrLinkBtn) {
+    copyDedicatedQrLinkBtn.addEventListener('click', () => {
+      const magicUrl = generateMagicSetupUrl(true);
+      if (!magicUrl) return;
+      navigator.clipboard.writeText(magicUrl).then(() => {
+        showToast('הקישור הישיר הועתק! שלח בוואטסאפ ופתח בנייד', 'check');
+      }).catch(() => {
+        showToast('לא ניתן להעתיק ללוח הגזירים', 'alert-circle');
+      });
+    });
+  }
+
+  let deferredPrompt = null;
+  const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent);
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
+  // הצגת כפתור "הוסף למסך הבית" אך ורק במכשירים ניידים (למניעת התקנת אפליקציית דסקטופ מקומית בטעות במחשב)
   if (isIos && !isStandalone && installBtn) {
     installBtn.classList.remove('hidden');
     installBtn.classList.add('inline-flex');
@@ -1617,7 +1756,7 @@ function setupPwaInstallAndGlobalPaste() {
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
-    if (installBtn && !isStandalone) {
+    if (isMobileDevice && installBtn && !isStandalone) {
       installBtn.classList.remove('hidden');
       installBtn.classList.add('inline-flex');
     }
@@ -1630,7 +1769,7 @@ function setupPwaInstallAndGlobalPaste() {
       const { outcome } = await deferredPrompt.userChoice;
       if (outcome === 'accepted') {
         installBtn.classList.add('hidden');
-        showToast('האפליקציה מותקנת במסך הבית!', 'check');
+        showToast('האפליקציה נוספה למסך הבית בנייד!', 'check');
       }
       deferredPrompt = null;
     });
