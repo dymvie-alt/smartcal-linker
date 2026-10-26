@@ -1,5 +1,5 @@
 // SmartCal Linker - Network-First Service Worker (PWA Install & Share Target Support without Stale Cache)
-const CACHE_NAME = 'smartcal-network-first-v20261026_09';
+const CACHE_NAME = 'smartcal-network-first-v20261026_10';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

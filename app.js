@@ -125,6 +125,22 @@ function setupAccountSelector() {
   renderAccountButtons();
 }
 
+function formatShortEmailTag(acc) {
+  if (!acc || !acc.email) return '';
+  const parts = acc.email.trim().split('@');
+  const user = parts[0];
+  const domain = parts[1] || '';
+  const baseTag = (domain && !domain.toLowerCase().startsWith('gmail.'))
+    ? `${user}@${domain.split('.')[0]}`
+    : `${user}@`;
+
+  if (acc.isGroup && acc.groupEmails) {
+    const count = acc.groupEmails.split(',').map(s => s.trim()).filter(Boolean).length;
+    return count > 0 ? `${baseTag} +${count}` : baseTag;
+  }
+  return baseTag;
+}
+
 function renderAccountButtons() {
   const container = document.getElementById('accountButtonsContainer');
   const label = document.getElementById('selectedAccountLabel');
@@ -143,15 +159,25 @@ function renderAccountButtons() {
     btn.dataset.account = acc.id;
     const isSelected = acc.id === currentAccountKey;
     if (isSelected) {
-      btn.className = 'account-btn active px-3 py-1.5 rounded-xl border border-blue-600 bg-blue-50 text-blue-700 font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 shadow-xs shrink-0 text-xs';
+      btn.className = 'account-btn active px-2.5 py-1.5 rounded-xl border border-blue-600 bg-blue-50 text-blue-700 font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 shadow-xs shrink-0 text-xs';
     } else {
-      btn.className = 'account-btn px-3 py-1.5 rounded-xl border border-gray-200 bg-white text-gray-700 font-medium hover:bg-gray-50 whitespace-nowrap transition-all flex items-center gap-1.5 shrink-0 text-xs';
+      btn.className = 'account-btn px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white text-gray-700 font-medium hover:bg-gray-50 whitespace-nowrap transition-all flex items-center gap-1.5 shrink-0 text-xs';
     }
 
     const iconSvg = acc.isGroup 
-      ? '<i data-lucide="users" class="w-3.5 h-3.5 text-blue-600"></i>' 
-      : '<i data-lucide="user" class="w-3.5 h-3.5 text-gray-400"></i>';
-    btn.innerHTML = `${iconSvg}<span>${acc.name}</span>`;
+      ? `<i data-lucide="users" class="w-3.5 h-3.5 ${isSelected ? 'text-blue-600' : 'text-gray-400'} shrink-0"></i>` 
+      : `<i data-lucide="user" class="w-3.5 h-3.5 ${isSelected ? 'text-blue-600' : 'text-gray-400'} shrink-0"></i>`;
+
+    const shortEmail = formatShortEmailTag(acc);
+    const emailChip = shortEmail
+      ? `<bdi dir="ltr" class="text-[10px] font-mono px-1.5 py-0.5 rounded-md ${isSelected ? 'bg-blue-100/90 text-blue-800' : 'bg-gray-100 text-gray-500'}">${shortEmail}</bdi>`
+      : '';
+
+    btn.title = acc.isGroup && acc.groupEmails
+      ? `${acc.name} (${acc.email}) • מוזמנים: ${acc.groupEmails}`
+      : `${acc.name} (${acc.email || ''})`;
+
+    btn.innerHTML = `${iconSvg}<span>${acc.name}</span>${emailChip}`;
 
     btn.addEventListener('click', () => {
       currentAccountKey = acc.id;
@@ -167,7 +193,20 @@ function renderAccountButtons() {
 
   const activeAcc = accounts.find(a => a.id === currentAccountKey) || accounts[0];
   if (label && activeAcc) {
-    label.textContent = activeAcc.name;
+    const groupCount = (activeAcc.isGroup && activeAcc.groupEmails)
+      ? activeAcc.groupEmails.split(',').map(s => s.trim()).filter(Boolean).length
+      : 0;
+    const groupBadge = groupCount > 0
+      ? `<span class="text-[10px] bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded-md font-semibold">+${groupCount} מוזמנים</span>`
+      : '';
+
+    label.innerHTML = `
+      <span class="inline-flex items-center gap-1.5 flex-wrap justify-end">
+        <span class="font-bold text-gray-800">${activeAcc.name}</span>
+        <bdi dir="ltr" class="font-mono text-[11px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md border border-blue-200 font-semibold">${activeAcc.email || ''}</bdi>
+        ${groupBadge}
+      </span>
+    `;
   }
 
   if (window.lucide) window.lucide.createIcons();
