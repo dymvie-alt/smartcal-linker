@@ -1,5 +1,6 @@
 // SmartCal Linker - Network-First Service Worker (PWA Install & Share Target Support without Stale Cache)
-const CACHE_NAME = 'smartcal-network-first-v20261026_10';
+const CACHE_NAME = 'smartcal-network-first-v20261026_11';
+const CONFIG_BACKUP_CACHE = 'smartcal-config-backup-v1';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -10,7 +11,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_NAME) {
+          if (key !== CACHE_NAME && key !== CONFIG_BACKUP_CACHE) {
             return caches.delete(key);
           }
         })

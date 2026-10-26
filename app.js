@@ -269,7 +269,17 @@ function setupTextActions() {
   if (clearBtn && textInput) {
     clearBtn.addEventListener('click', () => {
       textInput.value = '';
+      textInput.style.height = 'auto';
       textInput.focus();
+    });
+  }
+
+  if (textInput) {
+    textInput.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleParseRequest();
+      }
     });
   }
 
@@ -658,7 +668,10 @@ async function callGeminiApi(contents, apiKey) {
 4. מיקום (location): אם מדובר בוובינר מקוון, כנס רשת או מפגש דיגיטלי, רשום תמיד: "אונליין (Zoom)" או "מקוון" או קישור להצטרפות. אם האירוע פיזי, חלץ כתובת. אל תשאיר מיקום ריק אם ידוע שזה אירוע מקוון/אונליין!
 5. פירוט והערות (description): חובה למלא תמיד! חלץ תקציר בהיר של נושאי האירוע, סדר יום, שמות המרצים, וקישור לדף האירוע או ההרשמה.
 6. פתור ביטויי זמן יחסיים (מחר, מחרתיים, שבוע הבא) בהתייחס לזמן הנוכחי.
-7. חזרתיות (recurrence): אם מוזכר שהאירוע קבוע או חוזר (למשל "כל יום שלישי", "מפגש שבועי", "מדי חודש", "יומי"), ציין מחרוזת RRULE מתאימה (למשל: "RRULE:FREQ=WEEKLY", "RRULE:FREQ=DAILY", "RRULE:FREQ=MONTHLY"). אם זה אירוע חד-פעמי, החזר מחרוזת ריקה ("").
+7. חזרתיות (recurrence): אם מוזכר שהאירוע קבוע או חוזר (למשל "כל יום שלישי", "מפגש שבועי", "מדי חודש", "יומי", "פעם בשבועיים"), ציין מחרוזת RRULE תקנית:
+   - לאירוע שבועי ביום ספציפי חובה לציין BYDAY (לדוגמה: "RRULE:FREQ=WEEKLY;BYDAY=TU" ליום שלישי, כשקודי הימים הם SU,MO,TU,WE,TH,FR,SA).
+   - לדו-שבועי: "RRULE:FREQ=WEEKLY;INTERVAL=2". ליומי: "RRULE:FREQ=DAILY". לחודשי: "RRULE:FREQ=MONTHLY". לשנתי: "RRULE:FREQ=YEARLY".
+   - אם זה אירוע חד-פעמי, החזר מחרוזת ריקה ("").
 8. אזורי זמן זרים: אם שעת האירוע מצוינת באזור זמן זר (למשל EST, PST, GMT, CET), תרגם את השעות לזמן ישראל (${timeZone}) וציין בהערות את שעת המקור ואזור הזמן המקורי.
 `.trim();
 
@@ -822,8 +835,32 @@ function setRecurrenceValue(rrule) {
   if (window.lucide) window.lucide.createIcons();
 }
 
+// עזרי תאריכים חסינים לשגיאות (למניעת RangeError בעת עריכה ידנית או מעבר חצות)
+function getSafeDateStr(dateStr) {
+  if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(String(dateStr).trim())) {
+    return String(dateStr).trim();
+  }
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysToDateStr(dateStr, days) {
+  const safe = getSafeDateStr(dateStr);
+  const [y, m, d] = safe.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return dt.toISOString().slice(0, 10);
+}
+
 // --- 10. הזנת נתונים לטופס העריכה ---
 function populateEventForm(data) {
+  const safeStartDate = getSafeDateStr(data.startDate);
+  let safeEndDate = (data.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(data.endDate).trim()))
+    ? String(data.endDate).trim()
+    : safeStartDate;
+
   // נירמול זמנים קשיח
   let cleanStartTime = '';
   let cleanEndTime = '';
@@ -835,9 +872,15 @@ function populateEventForm(data) {
       const [h, m] = cleanStartTime.split(':').map(Number);
       const endH = (h + 1) % 24;
       cleanEndTime = `${String(endH).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      // אם שעת הסיום גלשה מעבר לחצות (למשל 23:30 -> 00:30), נקדם את תאריך הסיום ביום אחד
+      if (endH < h && safeEndDate === safeStartDate) {
+        safeEndDate = addDaysToDateStr(safeStartDate, 1);
+      }
     }
   }
 
+  data.startDate = safeStartDate;
+  data.endDate = safeEndDate;
   data.startTime = cleanStartTime;
   data.endTime = cleanEndTime;
 
@@ -847,10 +890,10 @@ function populateEventForm(data) {
   const isAllDayCheckbox = document.getElementById('eventIsAllDay');
   isAllDayCheckbox.checked = !!data.isAllDay;
 
-  document.getElementById('eventStartDate').value = data.startDate || '';
+  document.getElementById('eventStartDate').value = safeStartDate;
   document.getElementById('eventStartTime').value = cleanStartTime;
   
-  document.getElementById('eventEndDate').value = data.endDate || data.startDate || '';
+  document.getElementById('eventEndDate').value = safeEndDate;
   document.getElementById('eventEndTime').value = cleanEndTime;
 
   // הגדרה וסנכרון ויזואלי של שדה החזרתיות (כולל תגית בולטת בראש הכרטיס)
@@ -1000,6 +1043,9 @@ function setupConfirmResetModal() {
       const addBtn = document.getElementById('addToGoogleBtn');
       if (addBtn && addBtn.href) {
         window.open(addBtn.href, '_blank');
+      }
+      if (currentParsedEvent) {
+        saveToHistory(currentParsedEvent);
       }
       modal?.classList.add('hidden');
       hasExported = true;
@@ -1159,20 +1205,25 @@ function refreshCalendarLinks() {
   const accounts = getStoredAccounts();
   const account = accounts.find(a => a.id === currentAccountKey) || accounts[0] || { name: 'אישי', email: '' };
 
-  // 1. טיפול בתאריכים לפי יום שלם מול שעה מוגדרת
+  // 1. טיפול בתאריכים לפי יום שלם מול שעה מוגדרת (חסין מפני תאריך ריק בעת עריכה)
+  const safeStart = getSafeDateStr(ev.startDate);
+  const safeEnd = (ev.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(ev.endDate).trim()))
+    ? String(ev.endDate).trim()
+    : safeStart;
+
   let datesParam = '';
 
   if (ev.isAllDay) {
     // ביום שלם בגוגל: YYYYMMDD/YYYYMMDD (תאריך הסיום הוא בלעדי, קרי יום אחד אחרי תאריך הסיום האמיתי)
-    const startClean = ev.startDate.replace(/-/g, '');
-    let endObj = new Date(ev.endDate || ev.startDate);
-    endObj.setDate(endObj.getDate() + 1); // +1 יום לפרוטוקול גוגל
-    const endClean = endObj.toISOString().slice(0, 10).replace(/-/g, '');
-    datesParam = `${startClean}/${endClean}`;
+    const startClean = safeStart.replace(/-/g, '');
+    const endPlusOne = addDaysToDateStr(safeEnd, 1).replace(/-/g, '');
+    datesParam = `${startClean}/${endPlusOne}`;
   } else {
     // עם שעה: המרה מדויקת ל-UTC (YYYYMMDDTHHmmssZ)
-    const startIso = `${ev.startDate}T${ev.startTime || '10:00'}:00`;
-    const endIso = `${ev.endDate || ev.startDate}T${ev.endTime || '11:00'}:00`;
+    const sTime = normalizeTime(ev.startTime, '10:00');
+    const eTime = normalizeTime(ev.endTime, '11:00');
+    const startIso = `${safeStart}T${sTime}:00`;
+    const endIso = `${safeEnd}T${eTime}:00`;
 
     const startDateObj = new Date(startIso);
     const endDateObj = new Date(endIso);
@@ -1264,6 +1315,16 @@ function formatDateToUtcString(date) {
   );
 }
 
+// ניקוי והברחת תווים (Escaping) לפי תקן RFC 5545 עבור קובצי ICS
+function escapeIcsText(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r?\n/g, '\\n');
+}
+
 // --- 12. הורדת קובץ יומן (.ICS) ---
 function handleDownloadIcs() {
   if (!currentParsedEvent) return;
@@ -1271,18 +1332,36 @@ function handleDownloadIcs() {
   const ev = currentParsedEvent;
   saveToHistory(ev);
 
+  const safeStart = getSafeDateStr(ev.startDate);
+  const safeEnd = (ev.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(ev.endDate).trim()))
+    ? String(ev.endDate).trim()
+    : safeStart;
+
   let dtStart, dtEnd;
   if (ev.isAllDay) {
-    dtStart = `VALUE=DATE:${ev.startDate.replace(/-/g, '')}`;
-    let endObj = new Date(ev.endDate || ev.startDate);
-    endObj.setDate(endObj.getDate() + 1);
-    dtEnd = `VALUE=DATE:${endObj.toISOString().slice(0, 10).replace(/-/g, '')}`;
+    dtStart = `VALUE=DATE:${safeStart.replace(/-/g, '')}`;
+    const endPlusOne = addDaysToDateStr(safeEnd, 1).replace(/-/g, '');
+    dtEnd = `VALUE=DATE:${endPlusOne}`;
   } else {
-    const s = new Date(`${ev.startDate}T${ev.startTime || '10:00'}:00`);
-    const e = new Date(`${ev.endDate || ev.startDate}T${ev.endTime || '11:00'}:00`);
+    const sTime = normalizeTime(ev.startTime, '10:00');
+    const eTime = normalizeTime(ev.endTime, '11:00');
+    const s = new Date(`${safeStart}T${sTime}:00`);
+    const e = new Date(`${safeEnd}T${eTime}:00`);
     dtStart = formatDateToUtcString(s);
     dtEnd = formatDateToUtcString(e);
   }
+
+  // איסוף מוזמנים (כולל קבוצת משפחה אם נבחרה)
+  const accounts = getStoredAccounts();
+  const account = accounts.find(a => a.id === currentAccountKey) || accounts[0];
+  let allAttendees = [...(ev.attendees || [])];
+  if (account && account.isGroup && account.groupEmails) {
+    account.groupEmails.split(',').forEach(em => {
+      const trimmed = em.trim();
+      if (trimmed && !allAttendees.includes(trimmed)) allAttendees.push(trimmed);
+    });
+  }
+  const attendeeLines = allAttendees.map(email => `ATTENDEE;CN=${email};RSVP=TRUE:mailto:${email}`);
 
   const icsLines = [
     'BEGIN:VCALENDAR',
@@ -1293,12 +1372,13 @@ function handleDownloadIcs() {
     'BEGIN:VEVENT',
     `UID:${Date.now()}@smartcal.linker`,
     `DTSTAMP:${formatDateToUtcString(new Date())}`,
-    `SUMMARY:${ev.title || 'אירוע'}`,
+    `SUMMARY:${escapeIcsText(ev.title || 'אירוע')}`,
     ev.isAllDay ? `DTSTART;${dtStart}` : `DTSTART:${dtStart}`,
     ev.isAllDay ? `DTEND;${dtEnd}` : `DTEND:${dtEnd}`,
     ev.recurrence ? ev.recurrence : '',
-    ev.location ? `LOCATION:${ev.location}` : '',
-    ev.description ? `DESCRIPTION:${ev.description.replace(/\n/g, '\\n')}` : '',
+    ev.location ? `LOCATION:${escapeIcsText(ev.location)}` : '',
+    ev.description ? `DESCRIPTION:${escapeIcsText(ev.description)}` : '',
+    ...attendeeLines,
     'STATUS:CONFIRMED',
     'END:VEVENT',
     'END:VCALENDAR'
@@ -1348,15 +1428,22 @@ function handleOpenOutlook() {
   const accounts = getStoredAccounts();
   const account = accounts.find(a => a.id === currentAccountKey) || accounts[0];
 
+  const safeStart = getSafeDateStr(ev.startDate);
+  const safeEnd = (ev.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(ev.endDate).trim()))
+    ? String(ev.endDate).trim()
+    : safeStart;
+
   let startIso = '';
   let endIso = '';
 
   if (ev.isAllDay) {
-    startIso = `${ev.startDate}T00:00:00`;
-    endIso = `${ev.endDate || ev.startDate}T23:59:59`;
+    startIso = `${safeStart}T00:00:00`;
+    endIso = `${safeEnd}T23:59:59`;
   } else {
-    startIso = `${ev.startDate}T${ev.startTime || '10:00'}:00`;
-    endIso = `${ev.endDate || ev.startDate}T${ev.endTime || '11:00'}:00`;
+    const sTime = normalizeTime(ev.startTime, '10:00');
+    const eTime = normalizeTime(ev.endTime, '11:00');
+    startIso = `${safeStart}T${sTime}:00`;
+    endIso = `${safeEnd}T${eTime}:00`;
   }
 
   let allAttendees = [...(ev.attendees || [])];
@@ -1416,6 +1503,12 @@ function setupSettingsModal() {
       localStorage.removeItem('smartcal_api_key');
     }
     localStorage.setItem('smartcal_model', model);
+    backupConfigToCacheStorage({
+      k: key,
+      m: model,
+      a: getStoredAccounts(),
+      c: currentAccountKey
+    });
     modal.classList.add('hidden');
     showToast('ההגדרות נשמרו בהצלחה במכשיר', 'check');
   });
@@ -1813,6 +1906,18 @@ function setupPwaInstallAndGlobalPaste() {
       deferredPrompt = null;
     });
   }
+
+  // קיצור מקלדת גלובלי: Escape לסגירת כל חלון מודאלי פתוח
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      ['mobileQrModal', 'confirmResetModal', 'historyModal', 'settingsModal'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.classList.contains('hidden')) {
+          el.classList.add('hidden');
+        }
+      });
+    }
+  });
 
   // הדבקת תמונה גלובלית (צילום מסך מלוח הגזירים)
   document.addEventListener('paste', (e) => {
