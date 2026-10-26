@@ -79,6 +79,20 @@ input[dir="ltr"]::placeholder {
   animation: spin 1s linear infinite;
 }
 
+/* אנימציית הבהוב עדינה בעת מעבר בין אירועים בסדרה (Multi-Event Switch) */
+@keyframes form-switch-flash {
+  0% {
+    background-color: rgba(79, 70, 229, 0.07);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.event-switch-highlight {
+  animation: form-switch-flash 0.55s ease-out;
+}
+
 /* התאמת גלילה חלקה */
 ::-webkit-scrollbar {
   width: 6px;

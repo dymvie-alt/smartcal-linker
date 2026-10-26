@@ -80,8 +80,10 @@ let audioChunks = [];
 let recordingInterval = null;
 let recordingSeconds = 0;
 
-// נתוני האירוע שחולצו
+// נתוני האירועים שחולצו (תמיכה באירוע בודד ובריבוי אירועים - Multi-Event Batch)
 let currentParsedEvent = null;
+let parsedEventsList = [];
+let currentEventIndex = 0;
 
 // --- 2. אתחול האפליקציה בטעינה ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -630,8 +632,20 @@ async function handleParseRequest() {
 
   try {
     const result = await callGeminiApi(requestParts, apiKey);
-    populateEventForm(result);
-    showToast('פרטי האירוע חולצו בהצלחה!', 'check');
+    const eventsArr = Array.isArray(result?.events) && result.events.length > 0
+      ? result.events
+      : (result?.title ? [result] : []);
+
+    if (eventsArr.length === 0) {
+      throw new Error('לא זוהו אירועים בקלט שהוזן.');
+    }
+
+    populateEventsBatch(eventsArr, 0);
+    if (eventsArr.length > 1) {
+      showToast(`זוהו ${eventsArr.length} אירועים! דפדף ביניהם או שמור ברצף`, 'check');
+    } else {
+      showToast('פרטי האירוע חולצו בהצלחה!', 'check');
+    }
     // גלילה חלקה אל כרטיס התוצאה
     document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (error) {
@@ -642,7 +656,7 @@ async function handleParseRequest() {
   }
 }
 
-// קריאה ישירה ל-Google Gemini API עם Structured Outputs (JSON Schema)
+// קריאה ישירה ל-Google Gemini API עם Structured Outputs (JSON Schema) ותמיכה בריבוי אירועים
 async function callGeminiApi(contents, apiKey) {
   let model = getModel();
   if (!model || model.includes('2.5') || model.includes('1.5') || model.includes('2.0')) {
@@ -673,9 +687,13 @@ async function callGeminiApi(contents, apiKey) {
    - לדו-שבועי: "RRULE:FREQ=WEEKLY;INTERVAL=2". ליומי: "RRULE:FREQ=DAILY". לחודשי: "RRULE:FREQ=MONTHLY". לשנתי: "RRULE:FREQ=YEARLY".
    - אם זה אירוע חד-פעמי, החזר מחרוזת ריקה ("").
 8. אזורי זמן זרים: אם שעת האירוע מצוינת באזור זמן זר (למשל EST, PST, GMT, CET), תרגם את השעות לזמן ישראל (${timeZone}) וציין בהערות את שעת המקור ואזור הזמן המקורי.
+9. ריבוי אירועים (Multi-Events) מול אירוע חוזר:
+   - אם הקלט מתאר מפגש קבוע החוזר על עצמו באותה מתכונת (כגון "כל יום שלישי ב-20:00"), החזר אירוע אחד בלבד במערך events עם שדה recurrence מתאים.
+   - אם הקלט מכיל מספר אירועים נפרדים או מועדים שונים (למשל: טיסת הלוך וטיסת חזור, לו"ז כנס או טיול עם מספר מפגשים/הרצאות, רשימת משמרות או תורים בימים שונים, או פלייר עם מספר תאריכי מופעים) — חלץ כל אירוע כאיבר נפרד במערך events ומיין אותם בסדר כרונולוגי!
+   - שימור הקשר משותף: פרטים משותפים המופיעים בקלט (כגון כתובת הכנס, קישור זום משותף, מספר הזמנה/PNR או מוזמנים) יש לשלב בכל אחד מהאירועים הרלוונטיים במערך כדי שכל אירוע יעמוד בפני עצמו ביומן.
 `.trim();
 
-  const responseSchema = {
+  const eventItemSchema = {
     type: "OBJECT",
     properties: {
       title: { type: "STRING", description: "כותרת קצרה, מדויקת וברורה של האירוע בעברית" },
@@ -694,6 +712,18 @@ async function callGeminiApi(contents, apiKey) {
       }
     },
     required: ["title", "isAllDay", "startDate", "endDate", "startTime", "endTime", "location", "description"]
+  };
+
+  const responseSchema = {
+    type: "OBJECT",
+    properties: {
+      events: {
+        type: "ARRAY",
+        description: "רשימת כל האירועים שזוהו מתוך הקלט, ממוינים בסדר כרונולוגי (אירוע אחד או יותר)",
+        items: eventItemSchema
+      }
+    },
+    required: ["events"]
   };
 
   const requestBody = {
@@ -854,14 +884,14 @@ function addDaysToDateStr(dateStr, days) {
   return dt.toISOString().slice(0, 10);
 }
 
-// --- 10. הזנת נתונים לטופס העריכה ---
-function populateEventForm(data) {
+// --- 10. נירמול וניהול סדרת אירועים (Single & Multi-Events Batch) ---
+function normalizeSingleEventData(raw) {
+  const data = { ...(raw || {}) };
   const safeStartDate = getSafeDateStr(data.startDate);
   let safeEndDate = (data.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(data.endDate).trim()))
     ? String(data.endDate).trim()
     : safeStartDate;
 
-  // נירמול זמנים קשיח
   let cleanStartTime = '';
   let cleanEndTime = '';
 
@@ -879,31 +909,82 @@ function populateEventForm(data) {
     }
   }
 
-  data.startDate = safeStartDate;
-  data.endDate = safeEndDate;
-  data.startTime = cleanStartTime;
-  data.endTime = cleanEndTime;
+  return {
+    title: data.title || 'אירוע חדש',
+    isAllDay: !!data.isAllDay,
+    startDate: safeStartDate,
+    startTime: cleanStartTime,
+    endDate: safeEndDate,
+    endTime: cleanEndTime,
+    recurrence: (data.recurrence || '').trim(),
+    location: data.location || '',
+    description: data.description || '',
+    attendees: Array.isArray(data.attendees) ? data.attendees : [],
+    _exported: !!data._exported
+  };
+}
 
-  currentParsedEvent = { ...data };
+// טעינת מערך אירועים (או אירוע בודד) לתוך המערכת
+function populateEventsBatch(eventsInput, activeIdx = 0) {
+  let rawArray = [];
+  if (Array.isArray(eventsInput)) {
+    rawArray = eventsInput;
+  } else if (eventsInput && Array.isArray(eventsInput.events)) {
+    rawArray = eventsInput.events;
+  } else if (eventsInput && typeof eventsInput === 'object') {
+    rawArray = [eventsInput];
+  }
+
+  if (rawArray.length === 0) return;
+
+  parsedEventsList = rawArray.map(ev => normalizeSingleEventData(ev));
+  currentEventIndex = Math.min(Math.max(0, activeIdx), parsedEventsList.length - 1);
+  hasExported = parsedEventsList.every(ev => ev._exported);
+
+  // שמירת כל האירועים שחולצו להיסטוריה (בסדר הפוך כדי שהראשון יופיע ראשון בהיסטוריה)
+  for (let i = parsedEventsList.length - 1; i >= 0; i--) {
+    saveToHistory(parsedEventsList[i]);
+  }
+
+  loadCurrentEventIntoForm(false);
+  renderMultiEventBar();
+
+  document.getElementById('resultCard')?.classList.remove('hidden');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// מעטפת תאימות לאחור לטעינת אירוע בודד (למשל מתוך חלון ההיסטוריה)
+function populateEventForm(data) {
+  populateEventsBatch([data], 0);
+}
+
+// טעינת האירוע הפעיל הנוכחי (parsedEventsList[currentEventIndex]) לשדות הטופס
+function loadCurrentEventIntoForm(animateSwitch = false) {
+  if (!parsedEventsList.length) return;
+  if (currentEventIndex < 0 || currentEventIndex >= parsedEventsList.length) {
+    currentEventIndex = 0;
+  }
+
+  const data = parsedEventsList[currentEventIndex];
+  currentParsedEvent = data;
 
   document.getElementById('eventTitle').value = data.title || '';
   const isAllDayCheckbox = document.getElementById('eventIsAllDay');
   isAllDayCheckbox.checked = !!data.isAllDay;
 
-  document.getElementById('eventStartDate').value = safeStartDate;
-  document.getElementById('eventStartTime').value = cleanStartTime;
-  
-  document.getElementById('eventEndDate').value = safeEndDate;
-  document.getElementById('eventEndTime').value = cleanEndTime;
+  document.getElementById('eventStartDate').value = data.startDate || '';
+  document.getElementById('eventStartTime').value = data.startTime || '';
 
-  // הגדרה וסנכרון ויזואלי של שדה החזרתיות (כולל תגית בולטת בראש הכרטיס)
+  document.getElementById('eventEndDate').value = data.endDate || data.startDate || '';
+  document.getElementById('eventEndTime').value = data.endTime || '';
+
   setRecurrenceValue(data.recurrence || '');
 
   document.getElementById('eventLocation').value = data.location || '';
   const descEl = document.getElementById('eventDescription');
   descEl.value = data.description || '';
   autoResizeTextarea(descEl);
-  
+
   if (Array.isArray(data.attendees) && data.attendees.length > 0) {
     document.getElementById('eventAttendees').value = data.attendees.join(', ');
   } else {
@@ -912,11 +993,206 @@ function populateEventForm(data) {
 
   toggleAllDayUI(data.isAllDay);
   refreshCalendarLinks();
-  saveToHistory(currentParsedEvent);
 
-  // הצגת הכרטיס
-  document.getElementById('resultCard').classList.remove('hidden');
+  if (animateSwitch) {
+    const formEl = document.getElementById('eventForm');
+    if (formEl) {
+      formEl.classList.remove('event-switch-highlight');
+      void formEl.offsetWidth; // trigger reflow
+      formEl.classList.add('event-switch-highlight');
+    }
+  }
+}
+
+// מעבר יזום לאירוע לפי אינדקס
+function selectEventByIndex(idx, animate = true) {
+  if (idx < 0 || idx >= parsedEventsList.length) return;
+  currentEventIndex = idx;
+  loadCurrentEventIntoForm(animate);
+  renderMultiEventBar();
   if (window.lucide) window.lucide.createIcons();
+}
+
+// הסרת אירוע בודד מתוך סדרת אירועים
+function removeEventFromBatch(idx) {
+  if (parsedEventsList.length <= 1) {
+    requestNewEvent();
+    return;
+  }
+  const removed = parsedEventsList.splice(idx, 1)[0];
+  if (currentEventIndex >= parsedEventsList.length) {
+    currentEventIndex = parsedEventsList.length - 1;
+  }
+  hasExported = parsedEventsList.every(ev => ev._exported);
+  loadCurrentEventIntoForm(true);
+  renderMultiEventBar();
+  showToast(`האירוע "${removed.title || ''}" הוסר מהרשימה`, 'check');
+}
+
+// עיצוב תאריך קצר לכרטיסיית האירוע (DD/MM)
+function formatShortDateHebrew(dateStr, timeStr, isAllDay) {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  const shortDate = parts.length === 3 ? `${parts[2]}/${parts[1]}` : dateStr;
+  return isAllDay ? `${shortDate} (יום שלם)` : `${shortDate} • ${timeStr || ''}`;
+}
+
+// רינדור סרגל ריבוי האירועים וכפתורי ה-Batch (מוסתר באירוע בודד, מוצג ב-2+ אירועים)
+function renderMultiEventBar() {
+  const bar = document.getElementById('multiEventBar');
+  const batchActions = document.getElementById('multiEventBatchActions');
+  const pillsContainer = document.getElementById('multiEventPillsContainer');
+  const countBadge = document.getElementById('multiEventCountBadge');
+  const savedBadge = document.getElementById('multiEventSavedBadge');
+  const prevBtn = document.getElementById('prevEventBtn');
+  const nextBtn = document.getElementById('nextEventBtn');
+  const cardTitle = document.getElementById('resultCardTitle');
+  const cardSubtitle = document.getElementById('resultCardSubtitle');
+  const googleBtnText = document.getElementById('addToGoogleBtnText');
+  const downloadAllIcsText = document.getElementById('downloadAllIcsBtnText');
+  const nextUnsavedBtn = document.getElementById('openNextUnsavedGoogleBtn');
+
+  const total = parsedEventsList.length;
+
+  if (total <= 1) {
+    bar?.classList.add('hidden');
+    batchActions?.classList.add('hidden');
+    if (cardTitle) cardTitle.textContent = 'פרטי האירוע שזוהו';
+    if (cardSubtitle) cardSubtitle.textContent = 'בדוק, ערוך במידת הצורך ולחץ להוספה';
+    if (googleBtnText) googleBtnText.textContent = 'פתח ושמור ביומן Google';
+    return;
+  }
+
+  bar?.classList.remove('hidden');
+  batchActions?.classList.remove('hidden');
+
+  const savedCount = parsedEventsList.filter(e => e._exported).length;
+  const activeEv = parsedEventsList[currentEventIndex] || {};
+
+  if (cardTitle) {
+    cardTitle.textContent = `אירוע ${currentEventIndex + 1} מתוך ${total} שזוהו`;
+  }
+  if (cardSubtitle) {
+    cardSubtitle.textContent = activeEv._exported
+      ? 'אירוע זה כבר נשמר ביומן ✓ ניתן לערוך או לעבור לאירוע הבא'
+      : 'בדוק את פרטי האירוע הנוכחי ולחץ להוספה (יעבור אוטומטית לבא)';
+  }
+  if (countBadge) countBadge.textContent = `זוהו ${total} אירועים`;
+  if (savedBadge) {
+    savedBadge.textContent = `נשמרו ${savedCount}/${total}`;
+    savedBadge.className = savedCount === total
+      ? 'text-[11px] font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-lg'
+      : 'text-[11px] font-semibold text-indigo-700 bg-indigo-100/80 border border-indigo-200 px-2 py-0.5 rounded-lg';
+  }
+
+  if (prevBtn) prevBtn.disabled = currentEventIndex <= 0;
+  if (nextBtn) nextBtn.disabled = currentEventIndex >= total - 1;
+
+  if (googleBtnText) {
+    googleBtnText.textContent = activeEv._exported
+      ? `פתח שוב ביומן Google (אירוע ${currentEventIndex + 1}/${total} ✓)`
+      : `פתח ושמור ביומן Google (אירוע ${currentEventIndex + 1}/${total})`;
+  }
+  if (downloadAllIcsText) {
+    downloadAllIcsText.textContent = `הורד קובץ ICS מאוחד (${total} אירועים)`;
+  }
+  if (nextUnsavedBtn) {
+    const hasUnsavedOther = parsedEventsList.some((e, i) => i !== currentEventIndex && !e._exported);
+    nextUnsavedBtn.disabled = !hasUnsavedOther;
+    nextUnsavedBtn.classList.toggle('opacity-50', !hasUnsavedOther);
+    nextUnsavedBtn.classList.toggle('cursor-not-allowed', !hasUnsavedOther);
+  }
+
+  if (!pillsContainer) return;
+  pillsContainer.innerHTML = '';
+
+  parsedEventsList.forEach((ev, idx) => {
+    const isCurrent = idx === currentEventIndex;
+    const isSaved = !!ev._exported;
+
+    const pill = document.createElement('div');
+    pill.className = isCurrent
+      ? 'flex items-center gap-2 px-3 py-2 rounded-xl border-2 border-indigo-600 bg-white text-indigo-950 shadow-xs shrink-0 cursor-pointer transition-all max-w-[230px]'
+      : (isSaved
+        ? 'flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50/70 text-emerald-900 hover:bg-white shrink-0 cursor-pointer transition-all max-w-[210px]'
+        : 'flex items-center gap-2 px-2.5 py-1.5 rounded-xl border border-gray-200 bg-white/80 hover:bg-white text-gray-700 shrink-0 cursor-pointer transition-all max-w-[210px]');
+
+    const badgeHtml = isSaved
+      ? `<span class="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-bold shrink-0" title="נשמר ביומן">✓</span>`
+      : `<span class="w-5 h-5 rounded-full ${isCurrent ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'} flex items-center justify-center text-[11px] font-bold shrink-0">${idx + 1}</span>`;
+
+    const dateSub = formatShortDateHebrew(ev.startDate, ev.startTime, ev.isAllDay);
+
+    pill.innerHTML = `
+      ${badgeHtml}
+      <div class="truncate text-right flex-1 min-w-0">
+        <div class="text-xs font-bold truncate">${ev.title || 'אירוע'}</div>
+        <div class="text-[10px] ${isCurrent ? 'text-indigo-600 font-semibold' : 'text-gray-500'} truncate">${dateSub}</div>
+      </div>
+      <button type="button" class="remove-batch-ev-btn p-0.5 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors shrink-0" title="הסר אירוע זה מהרשימה">
+        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+      </button>
+    `;
+
+    pill.addEventListener('click', (e) => {
+      if (e.target.closest('.remove-batch-ev-btn')) return;
+      selectEventByIndex(idx, true);
+    });
+
+    pill.querySelector('.remove-batch-ev-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeEventFromBatch(idx);
+    });
+
+    pillsContainer.appendChild(pill);
+
+    if (isCurrent) {
+      setTimeout(() => {
+        pill.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      }, 50);
+    }
+  });
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// סימון האירוע הנוכחי כנשמר ומעבר אוטומטי לאירוע הבא שטרם נשמר (אם יש)
+function markCurrentEventExported(autoAdvance = false) {
+  if (!currentParsedEvent) return;
+  currentParsedEvent._exported = true;
+  if (parsedEventsList[currentEventIndex]) {
+    parsedEventsList[currentEventIndex]._exported = true;
+  }
+  hasExported = parsedEventsList.length > 0 && parsedEventsList.every(ev => ev._exported);
+  saveToHistory(currentParsedEvent);
+  renderMultiEventBar();
+
+  if (autoAdvance && parsedEventsList.length > 1) {
+    const prevIdx = currentEventIndex;
+    const nextUnsavedIdx = findNextUnsavedIndex(currentEventIndex);
+    if (nextUnsavedIdx !== -1 && nextUnsavedIdx !== currentEventIndex) {
+      setTimeout(() => {
+        selectEventByIndex(nextUnsavedIdx, true);
+        showToast(`אירוע ${prevIdx + 1} נשמר! עברנו אוטומטית לאירוע ${nextUnsavedIdx + 1} מתוך ${parsedEventsList.length}`, 'check');
+      }, 450);
+    } else if (hasExported) {
+      setTimeout(() => {
+        showToast(`כל ${parsedEventsList.length} האירועים בסדרה נשמרו בהצלחה!`, 'check');
+      }, 350);
+    }
+  }
+}
+
+function findNextUnsavedIndex(fromIdx) {
+  const total = parsedEventsList.length;
+  if (total <= 1) return -1;
+  for (let offset = 1; offset < total; offset++) {
+    const candidate = (fromIdx + offset) % total;
+    if (!parsedEventsList[candidate]._exported) {
+      return candidate;
+    }
+  }
+  return -1;
 }
 
 // התאמת גובה תיבת טקסט אוטומטית לפי כמות התוכן (ללא גלילה חנוקה)
@@ -980,6 +1256,24 @@ function setupFormChangeListeners() {
     });
   }
 
+  // כפתורי ניווט בסרגל ריבוי אירועים (הקודם / הבא / דלג לבא שטרם נשמר / הורד ICS מאוחד)
+  document.getElementById('prevEventBtn')?.addEventListener('click', () => {
+    if (currentEventIndex > 0) selectEventByIndex(currentEventIndex - 1, true);
+  });
+  document.getElementById('nextEventBtn')?.addEventListener('click', () => {
+    if (currentEventIndex < parsedEventsList.length - 1) selectEventByIndex(currentEventIndex + 1, true);
+  });
+  document.getElementById('downloadAllIcsBtn')?.addEventListener('click', handleDownloadAllIcs);
+  document.getElementById('openNextUnsavedGoogleBtn')?.addEventListener('click', () => {
+    const nextIdx = findNextUnsavedIndex(currentEventIndex);
+    if (nextIdx !== -1) {
+      selectEventByIndex(nextIdx, true);
+      showToast(`עברנו לאירוע ${nextIdx + 1} מתוך ${parsedEventsList.length}`, 'info');
+    } else {
+      showToast('כל האירועים בסדרה כבר נשמרו!', 'check');
+    }
+  });
+
   // כפתורי איפוס לאירוע חדש (זיהוי חכם והגנה מותנית)
   const resetFromCardBtn = document.getElementById('resetFromCardBtn');
   const resetAllBtn = document.getElementById('resetAllBtn');
@@ -1009,20 +1303,43 @@ function setupFormChangeListeners() {
     });
   }
 
-  // כפתור הורדת קובץ ICS
+  // כפתור הורדת קובץ ICS (לאירוע הנוכחי)
   document.getElementById('downloadIcsBtn').addEventListener('click', handleDownloadIcs);
 
   // כפתור העתקת קישור
   document.getElementById('copyLinkBtn').addEventListener('click', handleCopyDirectLink);
 }
 
-// בדיקה חכמה לפני איפוס: האם האירוע כבר נשמר/יוצא?
+// בדיקה חכמה לפני איפוס: האם כל האירועים כבר נשמרו/יוצאו?
 function requestNewEvent() {
-  if (!currentParsedEvent || hasExported) {
-    // האירוע כבר נשמר או שאין תוכן פעיל - מנקים מיד ללא חלון מעכב!
+  const allSaved = parsedEventsList.length === 0 || parsedEventsList.every(e => e._exported);
+  if (!currentParsedEvent || hasExported || allSaved) {
+    // הכל כבר נשמר או שאין תוכן פעיל - מנקים מיד ללא חלון מעכב!
     executeResetForNewEvent();
   } else {
-    // האירוע טרם נשמר - מציגים חלון אזהרה מעוצב
+    // התאמת טקסט חלון האזהרה לאירוע בודד מול סדרת אירועים
+    const titleEl = document.getElementById('confirmResetTitle');
+    const descEl = document.getElementById('confirmResetDesc');
+    const saveBtnTextEl = document.getElementById('saveAndResetBtnText');
+
+    const total = parsedEventsList.length;
+    const savedCount = parsedEventsList.filter(e => e._exported).length;
+    const unsavedCount = total - savedCount;
+
+    if (total > 1) {
+      if (titleEl) titleEl.textContent = `נותרו ${unsavedCount} אירועים שטרם נשמרו ביומן!`;
+      if (descEl) {
+        descEl.textContent = `מתוך ${total} אירועים שזוהו, שמרת עד כה ${savedCount}. האם להוריד קובץ יומן מאוחד (.ICS) עם כל האירועים לפני הניקוי?`;
+      }
+      if (saveBtnTextEl) saveBtnTextEl.textContent = `הורד קובץ ICS מאוחד (${total} אירועים) ונקה`;
+    } else {
+      if (titleEl) titleEl.textContent = 'עדיין לא שמרת את האירוע ביומן!';
+      if (descEl) {
+        descEl.textContent = 'חילצת את פרטי האירוע, אך עדיין לא פתחת אותו ביומן Google ולא העתקת את הקישור. האם לנקות בכל זאת?';
+      }
+      if (saveBtnTextEl) saveBtnTextEl.textContent = 'פתח ביומן Google ונקה';
+    }
+
     const modal = document.getElementById('confirmResetModal');
     if (modal) {
       modal.classList.remove('hidden');
@@ -1040,12 +1357,16 @@ function setupConfirmResetModal() {
 
   if (saveAndResetBtn) {
     saveAndResetBtn.addEventListener('click', () => {
-      const addBtn = document.getElementById('addToGoogleBtn');
-      if (addBtn && addBtn.href) {
-        window.open(addBtn.href, '_blank');
-      }
-      if (currentParsedEvent) {
-        saveToHistory(currentParsedEvent);
+      if (parsedEventsList.length > 1) {
+        handleDownloadAllIcs();
+      } else {
+        const addBtn = document.getElementById('addToGoogleBtn');
+        if (addBtn && addBtn.href) {
+          window.open(addBtn.href, '_blank');
+        }
+        if (currentParsedEvent) {
+          saveToHistory(currentParsedEvent);
+        }
       }
       modal?.classList.add('hidden');
       hasExported = true;
@@ -1071,12 +1392,14 @@ function setupConfirmResetModal() {
   });
 }
 
-// ביצוע איפוס מלא של הדף + יצירת נקודת שחזור (Undo)
+// ביצוע איפוס מלא של הדף + יצירת נקודת שחזור (Undo) כולל סדרות מרובות אירועים
 function executeResetForNewEvent() {
   // שמירת מצב קודם למקרה שהמשתמש ירצה לבטל מחיקה
-  if (currentParsedEvent) {
+  if (currentParsedEvent || parsedEventsList.length > 0) {
     lastClearedState = {
-      parsedEvent: JSON.parse(JSON.stringify(currentParsedEvent)),
+      parsedEvent: currentParsedEvent ? JSON.parse(JSON.stringify(currentParsedEvent)) : null,
+      parsedEventsList: JSON.parse(JSON.stringify(parsedEventsList)),
+      currentEventIndex: currentEventIndex,
       textVal: document.getElementById('textInput')?.value || ''
     };
   }
@@ -1111,13 +1434,17 @@ function executeResetForNewEvent() {
   const voiceStatus = document.getElementById('voiceStatusText');
   if (voiceStatus) voiceStatus.textContent = 'לחץ על המיקרופון והקלט את האירוע';
 
-  // 5. איפוס כרטיס תוצאה
+  // 5. איפוס כרטיס תוצאה וסדרת אירועים
   currentParsedEvent = null;
+  parsedEventsList = [];
+  currentEventIndex = 0;
   hasExported = false;
   document.getElementById('eventForm')?.reset();
   setRecurrenceValue('');
   const descEl = document.getElementById('eventDescription');
   if (descEl) descEl.style.height = 'auto';
+  document.getElementById('multiEventBar')?.classList.add('hidden');
+  document.getElementById('multiEventBatchActions')?.classList.add('hidden');
   document.getElementById('resultCard')?.classList.add('hidden');
 
   // 6. חזרה לטאב טקסט
@@ -1134,7 +1461,7 @@ function executeResetForNewEvent() {
   showToastWithUndo('הדף נוקה לקראת אירוע חדש', restoreLastClearedState);
 }
 
-// שחזור הנתונים שנמחקו (Undo)
+// שחזור הנתונים שנמחקו (Undo) - תומך בשחזור סדרת אירועים מלאה
 function restoreLastClearedState() {
   if (!lastClearedState) return;
 
@@ -1146,8 +1473,13 @@ function restoreLastClearedState() {
     }
   }
 
-  if (lastClearedState.parsedEvent) {
-    populateEventForm(lastClearedState.parsedEvent);
+  if (Array.isArray(lastClearedState.parsedEventsList) && lastClearedState.parsedEventsList.length > 0) {
+    populateEventsBatch(lastClearedState.parsedEventsList, lastClearedState.currentEventIndex || 0);
+    document.getElementById('resultCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const count = lastClearedState.parsedEventsList.length;
+    showToast(count > 1 ? `שוחזרו ${count} האירועים בהצלחה!` : 'האירוע שוחזר בהצלחה!', 'check');
+  } else if (lastClearedState.parsedEvent) {
+    populateEventsBatch([lastClearedState.parsedEvent], 0);
     document.getElementById('resultCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     showToast('האירוע שוחזר בהצלחה!', 'check');
   }
@@ -1156,12 +1488,11 @@ function restoreLastClearedState() {
 }
 
 function readFormDataAndUpdateLinks() {
-  hasExported = false; // שינוי ידני של נתונים שטרם נשמרו ביומן
   const isAllDay = document.getElementById('eventIsAllDay').checked;
   const attendeesRaw = document.getElementById('eventAttendees').value;
   const attendees = attendeesRaw ? attendeesRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
 
-  currentParsedEvent = {
+  const updatedEvent = {
     title: document.getElementById('eventTitle').value,
     isAllDay: isAllDay,
     startDate: document.getElementById('eventStartDate').value,
@@ -1171,10 +1502,20 @@ function readFormDataAndUpdateLinks() {
     recurrence: document.getElementById('eventRecurrence')?.value || '',
     location: document.getElementById('eventLocation').value,
     description: document.getElementById('eventDescription').value,
-    attendees: attendees
+    attendees: attendees,
+    _exported: false // עריכה ידנית מסמנת שהשינוי טרם נשמר
   };
 
+  currentParsedEvent = updatedEvent;
+  if (parsedEventsList.length > 0 && currentEventIndex < parsedEventsList.length) {
+    parsedEventsList[currentEventIndex] = updatedEvent;
+  }
+  hasExported = parsedEventsList.length > 0 && parsedEventsList.every(e => e._exported);
+
   refreshCalendarLinks();
+  if (parsedEventsList.length > 1) {
+    renderMultiEventBar();
+  }
 }
 
 // ניקוי טקסט עבור פרמטר URL: הסרת Markdown וחיתוך חכם בגבול מילה
@@ -1286,15 +1627,14 @@ function refreshCalendarLinks() {
 
   const finalGoogleUrl = `${baseUrl}&${params.toString()}`;
 
-  // עדכון כפתור ה-Google Calendar
+  // עדכון כפתור ה-Google Calendar (כולל קידום אוטומטי לאירוע הבא בריבוי אירועים!)
   const addBtn = document.getElementById('addToGoogleBtn');
   if (addBtn) {
     addBtn.href = finalGoogleUrl;
     if (!addBtn._exportClickBound) {
       addBtn._exportClickBound = true;
       addBtn.addEventListener('click', () => {
-        hasExported = true;
-        saveToHistory(currentParsedEvent);
+        markCurrentEventExported(true);
       });
     }
   }
@@ -1325,13 +1665,8 @@ function escapeIcsText(str) {
     .replace(/\r?\n/g, '\\n');
 }
 
-// --- 12. הורדת קובץ יומן (.ICS) ---
-function handleDownloadIcs() {
-  if (!currentParsedEvent) return;
-  hasExported = true;
-  const ev = currentParsedEvent;
-  saveToHistory(ev);
-
+// בניית בלוק VEVENT תקני עבור אירוע בודד (משמש גם לקובץ בודד וגם לקובץ מאוחד)
+function buildIcsVEventLines(ev, account, uidSuffix = 0) {
   const safeStart = getSafeDateStr(ev.startDate);
   const safeEnd = (ev.endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(ev.endDate).trim()))
     ? String(ev.endDate).trim()
@@ -1351,9 +1686,6 @@ function handleDownloadIcs() {
     dtEnd = formatDateToUtcString(e);
   }
 
-  // איסוף מוזמנים (כולל קבוצת משפחה אם נבחרה)
-  const accounts = getStoredAccounts();
-  const account = accounts.find(a => a.id === currentAccountKey) || accounts[0];
   let allAttendees = [...(ev.attendees || [])];
   if (account && account.isGroup && account.groupEmails) {
     account.groupEmails.split(',').forEach(em => {
@@ -1363,14 +1695,9 @@ function handleDownloadIcs() {
   }
   const attendeeLines = allAttendees.map(email => `ATTENDEE;CN=${email};RSVP=TRUE:mailto:${email}`);
 
-  const icsLines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//SmartCal Linker//HE',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
+  return [
     'BEGIN:VEVENT',
-    `UID:${Date.now()}@smartcal.linker`,
+    `UID:${Date.now()}_${uidSuffix}@smartcal.linker`,
     `DTSTAMP:${formatDateToUtcString(new Date())}`,
     `SUMMARY:${escapeIcsText(ev.title || 'אירוע')}`,
     ev.isAllDay ? `DTSTART;${dtStart}` : `DTSTART:${dtStart}`,
@@ -1380,9 +1707,29 @@ function handleDownloadIcs() {
     ev.description ? `DESCRIPTION:${escapeIcsText(ev.description)}` : '',
     ...attendeeLines,
     'STATUS:CONFIRMED',
-    'END:VEVENT',
+    'END:VEVENT'
+  ].filter(Boolean);
+}
+
+// --- 12. הורדת קובץ יומן (.ICS) לאירוע בודד או לכל הסדרה ---
+function handleDownloadIcs() {
+  if (!currentParsedEvent) return;
+  const ev = currentParsedEvent;
+  markCurrentEventExported(false);
+
+  const accounts = getStoredAccounts();
+  const account = accounts.find(a => a.id === currentAccountKey) || accounts[0];
+  const veventLines = buildIcsVEventLines(ev, account, currentEventIndex);
+
+  const icsLines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//SmartCal Linker//HE',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    ...veventLines,
     'END:VCALENDAR'
-  ].filter(Boolean).join('\r\n');
+  ].join('\r\n');
 
   const blob = new Blob([icsLines], { type: 'text/calendar;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -1397,12 +1744,52 @@ function handleDownloadIcs() {
   showToast('קובץ היומן (.ics) הורד בהצלחה', 'check');
 }
 
+// הורדת קובץ ICS מאוחד עבור כל האירועים בסדרה בלחיצה אחת
+function handleDownloadAllIcs() {
+  if (!parsedEventsList.length) return;
+
+  const accounts = getStoredAccounts();
+  const account = accounts.find(a => a.id === currentAccountKey) || accounts[0];
+
+  const allVEvents = [];
+  parsedEventsList.forEach((ev, idx) => {
+    ev._exported = true;
+    saveToHistory(ev);
+    allVEvents.push(...buildIcsVEventLines(ev, account, idx + 1));
+  });
+
+  hasExported = true;
+  renderMultiEventBar();
+
+  const icsLines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//SmartCal Linker//HE',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    ...allVEvents,
+    'END:VCALENDAR'
+  ].join('\r\n');
+
+  const blob = new Blob([icsLines], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const firstTitle = (parsedEventsList[0]?.title || 'events').replace(/[^a-zA-Z0-9\u0590-\u05FF]/g, '_');
+  a.download = `${firstTitle}_${parsedEventsList.length}_אירועים.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  showToast(`קובץ ICS מאוחד עם כל ${parsedEventsList.length} האירועים הורד בהצלחה!`, 'check');
+}
+
 // העתקת קישור ישיר
 function handleCopyDirectLink() {
   const addBtn = document.getElementById('addToGoogleBtn');
   if (addBtn && addBtn.href) {
-    hasExported = true;
-    if (currentParsedEvent) saveToHistory(currentParsedEvent);
+    markCurrentEventExported(false);
     navigator.clipboard.writeText(addBtn.href).then(() => {
       showToast('הקישור הועתק ללוח!', 'copy');
     }).catch(() => {
@@ -1422,8 +1809,7 @@ function setupOutlookAction() {
 function handleOpenOutlook() {
   if (!currentParsedEvent) return;
   const ev = currentParsedEvent;
-  hasExported = true;
-  saveToHistory(ev);
+  markCurrentEventExported(true);
 
   const accounts = getStoredAccounts();
   const account = accounts.find(a => a.id === currentAccountKey) || accounts[0];
