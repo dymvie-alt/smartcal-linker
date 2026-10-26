@@ -1,0 +1,31 @@
+{
+  "name": "SmartCal Linker - יומן חכם",
+  "short_name": "יומן חכם",
+  "description": "המרת כל אירוע, הודעה, תמונה או הקלטה קולית ליומן Google בלחיצה אחת",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8fafd",
+  "theme_color": "#1a73e8",
+  "dir": "rtl",
+  "lang": "he",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "share_target": {
+    "action": "./index.html",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}

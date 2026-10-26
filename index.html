@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SmartCal Linker - יומן חכם</title>
+  <link rel="icon" type="image/svg+xml" href="./icon.svg">
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#1a73e8">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="יומן חכם">
+
+  <!-- Model Migration & Smart Service Worker Registration (Network-First on HTTPS, disabled on localhost) -->
+  <script>
+    try {
+      localStorage.setItem('smartcal_model', 'gemini-3.8-flash');
+      if ('serviceWorker' in navigator) {
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+          navigator.serviceWorker.getRegistrations().then(function(regs) {
+            regs.forEach(function(r) { r.unregister(); });
+          });
+        } else {
+          window.addEventListener('load', function() {
+            navigator.serviceWorker.register('./sw.js').catch(function() {});
+          });
+        }
+      }
+    } catch (e) {}
+  </script>
+
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            google: {
+              blue: '#1a73e8',
+              'blue-hover': '#1557b0',
+              red: '#ea4335',
+              yellow: '#fbbc04',
+              green: '#34a853',
+              gray: '#5f6368',
+              light: '#f8fafd'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons & Client-Side QR Generator (100% Local Privacy) -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="./style.css?v=20261026_08">
+</head>
+<body class="bg-[#f8fafd] text-gray-800 min-h-screen flex flex-col antialiased selection:bg-blue-100 selection:text-blue-900">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200 sticky top-0 z-30 shadow-xs">
+    <div class="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shadow-xs">
+          <img src="./icon.svg" alt="SmartCal Logo" class="w-7 h-7">
+        </div>
+        <div>
+          <h1 class="text-lg font-bold text-gray-900 leading-tight">SmartCal Linker</h1>
+          <p class="text-xs text-gray-500">הוספת אירועים ליומן Google בלחיצה אחת</p>
+        </div>
+      </div>
+
+      <!-- Header Actions -->
+      <div class="flex items-center gap-1.5">
+        <button id="installPwaBtn" type="button" class="hidden px-2.5 py-1.5 rounded-xl bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 font-semibold text-xs transition-all items-center gap-1 shadow-2xs" title="הוסף למסך הבית בטלפון">
+          <i data-lucide="smartphone" class="w-4 h-4 text-blue-600"></i>
+          <span>התקן בנייד</span>
+        </button>
+        <button id="openHistoryBtn" class="p-2 rounded-xl text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors relative" title="אירועים אחרונים שנוצרו">
+          <i data-lucide="history" class="w-5 h-5"></i>
+          <span id="historyBadge" class="hidden absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-600"></span>
+        </button>
+        <button id="openSettingsBtn" class="p-2 rounded-xl text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors" title="הגדרות ומפתח API">
+          <i data-lucide="settings" class="w-5 h-5"></i>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="flex-1 max-w-2xl w-full mx-auto px-4 py-5 space-y-4">
+
+    <!-- 2Yoman Accounts Bar (סרגל ניתוב חשבונות דינמי) -->
+    <section class="bg-white rounded-2xl p-3 border border-gray-200/80 shadow-xs">
+      <div class="flex items-center justify-between mb-2 px-1">
+        <span class="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+          <i data-lucide="user-check" class="w-3.5 h-3.5 text-blue-600"></i>
+          יומן יעד בגוגל:
+        </span>
+        <span id="selectedAccountLabel" class="text-xs font-medium text-blue-600">דים (אישי)</span>
+      </div>
+      
+      <div id="accountButtonsContainer" class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-xs">
+        <!-- Rendered dynamically from stored accounts -->
+      </div>
+    </section>
+
+    <!-- Universal Input Card (אזור הקלט האוניברסלי) -->
+    <section class="bg-white rounded-2xl border border-gray-200/80 shadow-xs overflow-hidden">
+      <!-- Input Mode Tabs -->
+      <div class="grid grid-cols-4 border-b border-gray-200 bg-gray-50/70 p-1 gap-1 text-xs">
+        <button id="tabText" class="input-tab active py-2 px-1 rounded-xl font-medium text-blue-700 bg-white shadow-xs transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5">
+          <i data-lucide="link-2" class="w-4 h-4 text-blue-600"></i>
+          <span>טקסט / קישור / וואטסאפ</span>
+        </button>
+        <button id="tabImage" class="input-tab py-2 px-1 rounded-xl font-medium text-gray-600 hover:text-gray-900 transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5">
+          <i data-lucide="image" class="w-4 h-4 text-emerald-600"></i>
+          <span>פלייר / תמונה</span>
+        </button>
+        <button id="tabPdf" class="input-tab py-2 px-1 rounded-xl font-medium text-gray-600 hover:text-gray-900 transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5">
+          <i data-lucide="file-text" class="w-4 h-4 text-amber-600"></i>
+          <span>מסמך PDF</span>
+        </button>
+        <button id="tabVoice" class="input-tab py-2 px-1 rounded-xl font-medium text-gray-600 hover:text-gray-900 transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5">
+          <i data-lucide="mic" class="w-4 h-4 text-red-600"></i>
+          <span>הקלטה קולית</span>
+        </button>
+      </div>
+
+      <!-- Tab Content Area -->
+      <div class="p-4">
+
+        <!-- 1. Text / WhatsApp Panel -->
+        <div id="panelText" class="tab-panel space-y-3">
+          <div class="relative">
+            <textarea id="textInput" rows="4" dir="auto"
+              class="w-full text-sm rounded-xl border border-gray-200 p-3 pr-3 text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all resize-y min-h-[110px]"
+              placeholder="הדבק כאן קישור לדף אירוע (URL), הודעת וואטסאפ או טקסט חופשי (למשל: https://event.co.il/... או &quot;מחרתיים בשבע בערב חתונה באולמי אופוריה&quot;)..."></textarea>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <button id="pasteClipboardBtn" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 text-gray-700 bg-gray-50 hover:bg-gray-100 transition-all font-medium">
+              <i data-lucide="clipboard" class="w-3.5 h-3.5 text-blue-600"></i>
+              הדבק מהלוח
+            </button>
+            <button id="clearTextBtn" type="button" class="text-gray-400 hover:text-red-600 transition-colors">
+              נקה תוכן
+            </button>
+          </div>
+        </div>
+
+        <!-- 2. Image / Flyer Panel -->
+        <div id="panelImage" class="tab-panel hidden space-y-3">
+          <div id="imageDropZone" class="border-2 border-dashed border-gray-200 hover:border-emerald-500 rounded-xl p-6 text-center cursor-pointer transition-colors bg-gray-50/50 hover:bg-emerald-50/20">
+            <input type="file" id="imageFileInput" accept="image/*" capture="environment" class="hidden">
+            <div id="imagePlaceholder" class="space-y-2">
+              <div class="w-12 h-12 mx-auto rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                <i data-lucide="camera" class="w-6 h-6"></i>
+              </div>
+              <p class="text-sm font-semibold text-gray-700">צלם הזמנה או גרור תמונה לכאן</p>
+              <p class="text-xs text-gray-400">תומך בתמונות פליירים, צילומי מסך מהודעות, הזמנות אירוע (JPG, PNG)</p>
+            </div>
+            <!-- Image Preview -->
+            <div id="imagePreviewContainer" class="hidden relative max-w-xs mx-auto">
+              <img id="imagePreview" src="" alt="תצוגה מקדימה" class="max-h-52 mx-auto rounded-lg shadow-xs border border-gray-200 object-contain">
+              <button id="removeImageBtn" type="button" class="absolute -top-2 -right-2 bg-red-600 text-white rounded-full p-1 shadow-md hover:bg-red-700 transition-all">
+                <i data-lucide="x" class="w-4 h-4"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. PDF Document Panel -->
+        <div id="panelPdf" class="tab-panel hidden space-y-3">
+          <div id="pdfDropZone" class="border-2 border-dashed border-gray-200 hover:border-amber-500 rounded-xl p-6 text-center cursor-pointer transition-colors bg-gray-50/50 hover:bg-amber-50/20">
+            <input type="file" id="pdfFileInput" accept="application/pdf" class="hidden">
+            <div id="pdfPlaceholder" class="space-y-2">
+              <div class="w-12 h-12 mx-auto rounded-full bg-amber-100 text-amber-600 flex items-center justify-center">
+                <i data-lucide="file-text" class="w-6 h-6"></i>
+              </div>
+              <p class="text-sm font-semibold text-gray-700">בחר כרטיס טיסה, הזמנה או מסמך PDF</p>
+              <p class="text-xs text-gray-400">ה-AI יקרא ויחלץ את פרטי הטיסה או הכנס ישירות מהמסמך</p>
+            </div>
+            <!-- PDF File Info -->
+            <div id="pdfInfoContainer" class="hidden flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl p-3 text-right">
+              <div class="flex items-center gap-2 overflow-hidden">
+                <i data-lucide="file-check" class="w-5 h-5 text-amber-600 shrink-0"></i>
+                <div class="truncate text-xs">
+                  <span id="pdfFileName" class="font-semibold text-gray-800 block truncate">document.pdf</span>
+                  <span id="pdfFileSize" class="text-gray-500 text-[11px]">1.2 MB</span>
+                </div>
+              </div>
+              <button id="removePdfBtn" type="button" class="text-gray-400 hover:text-red-600 p-1">
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Voice Recording Panel -->
+        <div id="panelVoice" class="tab-panel hidden py-4 text-center space-y-4">
+          <div class="flex flex-col items-center justify-center">
+            <button id="micRecordBtn" type="button" class="w-20 h-20 rounded-full bg-red-50 text-red-600 border-2 border-red-200 hover:bg-red-100 hover:border-red-400 flex items-center justify-center transition-all shadow-md focus:outline-none">
+              <i data-lucide="mic" id="micIcon" class="w-8 h-8"></i>
+            </button>
+            <div id="recordingTimer" class="mt-3 text-lg font-mono font-bold text-red-600 hidden">00:00</div>
+          </div>
+          <div class="space-y-1">
+            <p id="voiceStatusText" class="text-sm font-semibold text-gray-800">לחץ על המיקרופון והקלט את האירוע</p>
+            <p class="text-xs text-gray-500 max-w-sm mx-auto">דוגמה: "פגישת עבודה עם יובל ביום חמישי ב-11 בבוקר בזום"</p>
+          </div>
+          <!-- Audio player preview if recorded -->
+          <div id="audioPlaybackContainer" class="hidden pt-2 max-w-xs mx-auto">
+            <audio id="audioPreview" controls class="w-full h-9"></audio>
+            <button id="removeAudioBtn" type="button" class="mt-2 text-xs text-red-600 hover:underline">מחק הקלטה והקלט מחדש</button>
+          </div>
+        </div>
+
+        <!-- Submit & Parse Button -->
+        <div class="pt-3">
+          <button id="parseEventBtn" type="button" class="w-full py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+            <i data-lucide="sparkles" class="w-4 h-4"></i>
+            <span id="parseBtnText">חלץ פרטים וצור אירוע</span>
+          </button>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Loading State Skeleton -->
+    <div id="loadingState" class="hidden bg-white rounded-2xl p-6 border border-gray-200 shadow-xs text-center space-y-3">
+      <div class="w-12 h-12 mx-auto rounded-full bg-blue-50 text-blue-600 flex items-center justify-center">
+        <i data-lucide="loader-2" class="w-6 h-6 animate-spin-custom"></i>
+      </div>
+      <div>
+        <h3 id="loadingTitle" class="text-sm font-bold text-gray-800">מנתח את תוכן האירוע באמצעות AI...</h3>
+        <p id="loadingSub" class="text-xs text-gray-500 mt-1">מחלץ תאריכים, שעות, מיקום ומנרמל ליומן</p>
+      </div>
+    </div>
+
+    <!-- Review & Edit Form Card (כרטיס התוצאה והעריכה) -->
+    <section id="resultCard" class="hidden bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden transition-all">
+      <div class="bg-gradient-to-r from-blue-50 to-indigo-50/50 p-4 border-b border-blue-100 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs">
+            <i data-lucide="calendar-check" class="w-4 h-4"></i>
+          </span>
+          <div>
+            <h2 class="text-sm font-bold text-gray-900">פרטי האירוע שזוהו</h2>
+            <p class="text-xs text-gray-500">בדוק, ערוך במידת הצורך ולחץ להוספה</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span id="allDayBadge" class="hidden text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+            יום שלם
+          </span>
+          <span id="recurringBadge" class="hidden text-[11px] font-semibold bg-purple-100 text-purple-800 border border-purple-200 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
+            <i data-lucide="repeat" class="w-3 h-3 text-purple-600"></i>
+            <span id="recurringBadgeText">אירוע חוזר</span>
+          </span>
+          <button id="resetFromCardBtn" type="button" class="text-xs text-blue-700 hover:text-blue-900 bg-white hover:bg-blue-50 px-2.5 py-1.5 rounded-xl border border-blue-200 font-semibold transition-all flex items-center gap-1 shadow-2xs">
+            <i data-lucide="plus-circle" class="w-3.5 h-3.5 text-blue-600"></i>
+            <span>אירוע חדש</span>
+          </button>
+        </div>
+      </div>
+
+      <form id="eventForm" class="p-4 space-y-3.5 text-sm">
+        
+        <!-- Title -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-600 mb-1">שם האירוע / כותרת</label>
+          <input type="text" id="eventTitle" required dir="rtl"
+            class="w-full text-sm font-medium rounded-xl border border-gray-200 px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-right">
+        </div>
+
+        <!-- All Day Toggle -->
+        <div class="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2 border border-gray-100">
+          <label for="eventIsAllDay" class="text-xs font-medium text-gray-700 cursor-pointer flex items-center gap-1.5">
+            <i data-lucide="clock" class="w-3.5 h-3.5 text-gray-500"></i>
+            אירוע יום שלם (ללא שעה ספציפית)
+          </label>
+          <input type="checkbox" id="eventIsAllDay" class="w-4 h-4 text-blue-600 rounded-md border-gray-300 focus:ring-blue-500 cursor-pointer">
+        </div>
+
+        <!-- Dates Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <!-- Start -->
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">התחלה</label>
+            <div class="grid grid-cols-2 gap-1.5">
+              <input type="date" id="eventStartDate" required
+                class="w-full text-xs rounded-xl border border-gray-200 px-2.5 py-2 text-gray-800 focus:outline-none focus:border-blue-500">
+              <input type="time" id="eventStartTime"
+                class="w-full text-xs rounded-xl border border-gray-200 px-2.5 py-2 text-gray-800 focus:outline-none focus:border-blue-500">
+            </div>
+          </div>
+
+          <!-- End -->
+          <div>
+            <label class="block text-xs font-semibold text-gray-600 mb-1">סיום</label>
+            <div class="grid grid-cols-2 gap-1.5">
+              <input type="date" id="eventEndDate" required
+                class="w-full text-xs rounded-xl border border-gray-200 px-2.5 py-2 text-gray-800 focus:outline-none focus:border-blue-500">
+              <input type="time" id="eventEndTime"
+                class="w-full text-xs rounded-xl border border-gray-200 px-2.5 py-2 text-gray-800 focus:outline-none focus:border-blue-500">
+            </div>
+          </div>
+        </div>
+
+        <!-- Recurrence (חזרתיות של האירוע) -->
+        <div id="recurrenceRowContainer" class="flex items-center justify-between bg-gray-50/80 rounded-xl px-3 py-2 border border-gray-100 transition-all">
+          <label for="eventRecurrence" class="text-xs font-semibold text-gray-700 flex items-center gap-1.5 shrink-0">
+            <i data-lucide="repeat" class="w-3.5 h-3.5 text-purple-600"></i>
+            <span>חזרתיות של האירוע:</span>
+          </label>
+          <div class="flex items-center gap-2">
+            <select id="eventRecurrence" class="text-xs bg-white border border-gray-300 rounded-lg px-2.5 py-1.5 text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 font-medium min-w-[210px]">
+              <option value="">חד-פעמי (ללא חזרה)</option>
+              <option value="RRULE:FREQ=DAILY">יומי (כל יום)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=SU">שבועי (בכל יום ראשון)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=MO">שבועי (בכל יום שני)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=TU">שבועי (בכל יום שלישי)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=WE">שבועי (בכל יום רביעי)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=TH">שבועי (בכל יום חמישי)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=FR">שבועי (בכל יום שישי)</option>
+              <option value="RRULE:FREQ=WEEKLY;BYDAY=SA">שבועי (בכל יום שבת)</option>
+              <option value="RRULE:FREQ=WEEKLY">שבועי (פעם בשבוע)</option>
+              <option value="RRULE:FREQ=WEEKLY;INTERVAL=2">דו-שבועי (כל שבועיים)</option>
+              <option value="RRULE:FREQ=MONTHLY">חודשי (פעם בחודש)</option>
+              <option value="RRULE:FREQ=YEARLY">שנתי (פעם בשנה)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Location -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-600 mb-1 flex items-center justify-between">
+            <span>מיקום או קישור לפגישה</span>
+            <a id="mapsLink" href="#" target="_blank" class="hidden text-[11px] text-blue-600 hover:underline flex items-center gap-0.5">
+              <span>הצג במפות</span>
+              <i data-lucide="external-link" class="w-3 h-3"></i>
+            </a>
+          </label>
+          <div class="relative">
+            <input type="text" id="eventLocation" dir="auto" placeholder="כתובת פיזית או קישור ל-Zoom/Google Meet..."
+              class="w-full text-sm rounded-xl border border-gray-200 px-3 py-2 pr-9 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all">
+            <i data-lucide="map-pin" class="w-4 h-4 text-gray-400 absolute right-3 top-2.5"></i>
+          </div>
+        </div>
+
+        <!-- Description -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="text-xs font-semibold text-gray-600">פירוט והערות</label>
+            <button id="toggleDescExpandBtn" type="button" class="text-[11px] text-blue-600 hover:text-blue-800 flex items-center gap-1 font-medium transition-colors">
+              <i data-lucide="unfold-vertical" class="w-3 h-3"></i>
+              <span id="expandBtnLabel">הרחב תיבה</span>
+            </button>
+          </div>
+          <textarea id="eventDescription" rows="3" dir="auto"
+            class="w-full text-xs rounded-xl border border-gray-200 p-3 text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all resize-y leading-relaxed min-h-[75px]"
+            placeholder="פרטים נוספים, סדר יום, קישורים..."></textarea>
+        </div>
+
+        <!-- Attendees -->
+        <div>
+          <label class="block text-xs font-semibold text-gray-600 mb-1">מוזמנים ומשתתפים (כתובות אימייל מופרדות בפסיק)</label>
+          <input type="text" id="eventAttendees" dir="ltr" placeholder="guest1@gmail.com, guest2@example.com"
+            class="w-full text-xs rounded-xl border border-gray-200 px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-left">
+        </div>
+
+        <!-- Primary Action Button: Add to Google Calendar -->
+        <div class="pt-2 space-y-2.5">
+          <a id="addToGoogleBtn" href="#" target="_blank"
+            class="w-full py-3.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2.5">
+            <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+              <path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11zM7 11h5v5H7z"/>
+            </svg>
+            <span>פתח ושמור ביומן Google</span>
+            <i data-lucide="external-link" class="w-4 h-4 opacity-80"></i>
+          </a>
+
+          <!-- Secondary Actions (ICS, Outlook, Copy) -->
+          <div class="grid grid-cols-3 gap-1.5 text-xs">
+            <button id="downloadIcsBtn" type="button" class="py-2.5 px-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 font-medium transition-all flex items-center justify-center gap-1 shadow-xs" title="קובץ יומן סטנדרטי לאפל/אאוטלוק">
+              <i data-lucide="download" class="w-3.5 h-3.5 text-blue-600 shrink-0"></i>
+              <span class="truncate">קובץ ICS</span>
+            </button>
+            <button id="addToOutlookBtn" type="button" class="py-2.5 px-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 font-medium transition-all flex items-center justify-center gap-1 shadow-xs" title="פתח ישירות ב-Outlook Web">
+              <i data-lucide="calendar" class="w-3.5 h-3.5 text-sky-600 shrink-0"></i>
+              <span class="truncate">יומן Outlook</span>
+            </button>
+            <button id="copyLinkBtn" type="button" class="py-2.5 px-2 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 font-medium transition-all flex items-center justify-center gap-1 shadow-xs" title="העתק קישור שיתוף ישיר">
+              <i data-lucide="copy" class="w-3.5 h-3.5 text-emerald-600 shrink-0"></i>
+              <span class="truncate">העתק קישור</span>
+            </button>
+          </div>
+
+          <!-- New Event / Reset Button -->
+          <div class="pt-2 border-t border-gray-100">
+            <button id="resetAllBtn" type="button" class="w-full py-2.5 px-3 rounded-xl border border-dashed border-gray-300 hover:border-blue-400 bg-gray-50 hover:bg-blue-50/50 text-gray-700 hover:text-blue-700 font-semibold text-xs transition-all flex items-center justify-center gap-2">
+              <i data-lucide="rotate-ccw" class="w-3.5 h-3.5 text-blue-600"></i>
+              <span>סיימת? נקה והתחל אירוע חדש</span>
+            </button>
+          </div>
+        </div>
+
+      </form>
+    </section>
+
+  </main>
+
+  <!-- Settings Modal (הגדרות ומפתח API) -->
+  <div id="settingsModal" class="hidden fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-5 shadow-2xl border border-gray-200 space-y-4 text-right">
+      <div class="flex items-center justify-between pb-3 border-b border-gray-100">
+        <div class="flex items-center gap-2">
+          <i data-lucide="sliders" class="w-5 h-5 text-blue-600"></i>
+          <h3 class="text-base font-bold text-gray-900">הגדרות ומפתח <bdi class="text-blue-600">Gemini API</bdi></h3>
+        </div>
+        <button id="closeSettingsBtn" class="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3.5 text-xs">
+        <div>
+          <label class="block font-semibold text-gray-700 mb-1">
+            <span>מפתח</span> <bdi class="font-mono text-gray-900">Google Gemini API</bdi><span>:</span>
+          </label>
+          <input type="password" id="apiKeyInput" placeholder="הדבק כאן מפתח המתחיל ב-AIzaSy..." dir="ltr"
+            class="w-full font-mono text-xs rounded-xl border border-gray-300 px-3 py-2.5 text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all">
+          <div class="flex items-center justify-between mt-1.5 flex-wrap gap-1">
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" class="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline font-semibold">
+              <i data-lucide="key" class="w-3 h-3"></i>
+              <span>קבל מפתח חינמי ב-Google AI Studio</span>
+              <i data-lucide="external-link" class="w-3 h-3"></i>
+            </a>
+          </div>
+          <p class="text-[11px] text-gray-500 mt-1 leading-relaxed">
+            המפתח נשמר במכשיר שלך בלבד (<bdi class="font-mono text-[10px] bg-gray-100 px-1 py-0.5 rounded">localStorage</bdi>) ואינו מועבר לאף שרת חיצוני.
+          </p>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-gray-700 mb-1">
+            <span>מודל עיבוד ופענוח:</span>
+          </label>
+          <select id="modelSelect" class="w-full rounded-xl border border-gray-300 px-3 py-2 text-gray-900 focus:outline-none focus:border-blue-500 bg-white text-xs">
+            <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash (המודל העדכני ביותר ומהיר - מומלץ)</option>
+            <option value="gemini-3.8-flash-lite">Gemini 3.8 Flash-Lite (סופר מהיר)</option>
+            <option value="gemini-3.7-flash">Gemini 3.7 Flash (יציב)</option>
+          </select>
+        </div>
+
+        <div class="bg-blue-50/70 border border-blue-100 rounded-xl p-3 text-[11px] text-blue-900 space-y-1 text-right">
+          <p class="font-bold flex items-center gap-1.5">
+            <i data-lucide="shield-check" class="w-4 h-4 text-blue-600 shrink-0"></i>
+            <span>פרטיות ואבטחה מלאה:</span>
+          </p>
+          <p class="leading-relaxed text-blue-800">
+            הקלטות קוליות, תמונות והודעות מעובדות ישירות מול גוגל ומיועדות אך ורק לחילוץ פרטי האירוע ליומן שלך.
+          </p>
+        </div>
+
+        <!-- ניהול יומני יעד וחשבונות (2יומן) -->
+        <div class="border-t border-gray-100 pt-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-semibold text-gray-800 flex items-center gap-1.5">
+              <i data-lucide="users" class="w-4 h-4 text-blue-600"></i>
+              ניהול יומני יעד וחשבונות:
+            </span>
+            <button id="resetAccountsDefaultBtn" type="button" class="text-[10px] text-gray-400 hover:text-blue-600 transition-colors">
+              אפס לברירות מחדל
+            </button>
+          </div>
+          
+          <!-- Accounts list -->
+          <div id="accountsManagerList" class="space-y-1.5 max-h-36 overflow-y-auto pr-0.5">
+            <!-- Dynamic accounts list -->
+          </div>
+
+          <!-- Add Account Accordion / Form -->
+          <div class="bg-gray-50/70 rounded-xl p-2.5 border border-gray-200/70 space-y-2 mt-2">
+            <p class="font-bold text-[11px] text-gray-700 flex items-center gap-1">
+              <i data-lucide="user-plus" class="w-3.5 h-3.5 text-blue-600"></i>
+              הוספת יומן חדש
+            </p>
+            <div class="grid grid-cols-2 gap-1.5">
+              <input type="text" id="newAccountName" placeholder="כינוי (למשל: עבודה נוספת)" class="text-xs rounded-lg border border-gray-300 p-1.5 text-gray-800 focus:outline-none focus:border-blue-500">
+              <input type="email" id="newAccountEmail" placeholder="כתובת Gmail" dir="ltr" class="text-xs rounded-lg border border-gray-300 p-1.5 text-gray-800 focus:outline-none focus:border-blue-500 text-left">
+            </div>
+            <div class="flex items-center justify-between gap-2">
+              <label class="text-[11px] text-gray-600 flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" id="newAccountIsGroup" class="rounded text-blue-600 w-3.5 h-3.5">
+                <span>קבוצה / משפחה (מזמין נמענים נוספים)</span>
+              </label>
+              <button id="addNewAccountBtn" type="button" class="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold text-[11px] transition-all flex items-center gap-1 shrink-0">
+                <i data-lucide="plus" class="w-3 h-3"></i>
+                הוסף יומן
+              </button>
+            </div>
+            <div id="groupEmailsContainer" class="hidden">
+              <input type="text" id="newAccountGroupEmails" placeholder="אימיילים להזמנה קבוצתית (מופרדים בפסיק)" dir="ltr" class="w-full text-xs rounded-lg border border-gray-300 p-1.5 text-gray-800 focus:outline-none focus:border-blue-500 text-left">
+            </div>
+          </div>
+        </div>
+
+        <!-- סנכרון מהיר למובייל / מכשיר נוסף (Magic Setup Link & QR) -->
+        <div class="border-t border-gray-100 pt-3 space-y-2">
+          <span class="font-semibold text-gray-800 flex items-center gap-1.5">
+            <i data-lucide="smartphone" class="w-4 h-4 text-emerald-600"></i>
+            העברת הגדרות לטלפון נייד / מכשיר נוסף:
+          </span>
+          <p class="text-[11px] text-gray-500 leading-relaxed">
+            העבר את מפתח ה-API ורשימת היומנים לטלפון שלך או לבני המשפחה בלחיצה אחת וללא צורך בהקלדה ידנית:
+          </p>
+          <div class="grid grid-cols-2 gap-2 pt-1">
+            <button id="copySetupLinkBtn" type="button" class="py-2 px-2.5 rounded-xl border border-emerald-200 bg-emerald-50/70 hover:bg-emerald-100 text-emerald-800 font-semibold text-[11px] transition-all flex items-center justify-center gap-1.5 shadow-2xs">
+              <i data-lucide="link" class="w-3.5 h-3.5 text-emerald-600 shrink-0"></i>
+              <span>העתק קישור הגדרה</span>
+            </button>
+            <button id="toggleSetupQrBtn" type="button" class="py-2 px-2.5 rounded-xl border border-blue-200 bg-blue-50/70 hover:bg-blue-100 text-blue-800 font-semibold text-[11px] transition-all flex items-center justify-center gap-1.5 shadow-2xs">
+              <i data-lucide="qr-code" class="w-3.5 h-3.5 text-blue-600 shrink-0"></i>
+              <span>הצג קוד QR לסריקה</span>
+            </button>
+          </div>
+          <!-- QR Code Display Area -->
+          <div id="setupQrContainer" class="hidden bg-white border border-gray-200 rounded-xl p-3 text-center space-y-2 shadow-inner">
+            <div id="qrCanvasWrapper" class="flex items-center justify-center mx-auto bg-white p-2 rounded-lg"></div>
+            <p class="text-[11px] text-gray-600 font-medium text-center">
+              סרוק עם מצלמת הטלפון לפתיחה והגדרה אוטומטית של המפתח והיומנים
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+        <button id="saveSettingsBtn" class="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs shadow-md transition-all">
+          שמור הגדרות
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- History Modal (היסטוריית אירועים אחרונים) -->
+  <div id="historyModal" class="hidden fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] flex flex-col p-5 shadow-2xl border border-gray-200 text-right">
+      <div class="flex items-center justify-between pb-3 border-b border-gray-100 shrink-0">
+        <div class="flex items-center gap-2">
+          <i data-lucide="history" class="w-5 h-5 text-blue-600"></i>
+          <h3 class="text-base font-bold text-gray-900">אירועים אחרונים שנוצרו</h3>
+          <span id="historyCountBadge" class="text-[11px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full font-semibold border border-blue-100">0</span>
+        </div>
+        <button id="closeHistoryBtn" class="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- History List Body -->
+      <div id="historyListContainer" class="flex-1 overflow-y-auto py-3 space-y-2.5 text-xs pr-1">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <!-- History Footer -->
+      <div class="flex items-center justify-between pt-3 border-t border-gray-100 shrink-0">
+        <button id="clearAllHistoryBtn" type="button" class="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1 transition-colors">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          נקה היסטוריה
+        </button>
+        <button id="closeHistoryBottomBtn" type="button" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold text-xs transition-colors">
+          סגור
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Reset Modal (התראת אירוע חדש ללא שמירה) -->
+  <div id="confirmResetModal" class="hidden fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-gray-200 space-y-4 text-right">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center shrink-0">
+          <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+        </div>
+        <div class="space-y-1">
+          <h3 class="text-sm font-bold text-gray-900 leading-tight">עדיין לא שמרת את האירוע ביומן!</h3>
+          <p class="text-xs text-gray-500 leading-relaxed">
+            חילצת את פרטי האירוע, אך עדיין לא פתחת אותו ביומן Google ולא העתקת את הקישור. האם לנקות בכל זאת?
+          </p>
+        </div>
+      </div>
+
+      <div class="space-y-2 pt-2">
+        <!-- Option A: Save now and reset -->
+        <button id="saveAndResetBtn" type="button" class="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2">
+          <i data-lucide="calendar-plus" class="w-4 h-4"></i>
+          <span>פתח ביומן Google ונקה</span>
+        </button>
+
+        <!-- Option B: Discard without saving -->
+        <button id="discardAndResetBtn" type="button" class="w-full py-2 px-3 rounded-xl border border-gray-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 text-gray-700 font-semibold text-xs transition-all flex items-center justify-center gap-1.5">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5 text-gray-400"></i>
+          <span>נקה ללא שמירה</span>
+        </button>
+
+        <!-- Option C: Cancel / Keep editing -->
+        <button id="cancelResetBtn" type="button" class="w-full py-1.5 text-gray-400 hover:text-gray-700 font-medium text-xs transition-colors">
+          חזור לעריכת האירוע
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification with optional Undo button -->
+  <div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 hidden px-4 py-2.5 rounded-xl bg-gray-900 text-white text-xs font-medium shadow-xl items-center gap-2.5 transition-all max-w-[90vw]">
+    <i id="toastIcon" data-lucide="info" class="w-4 h-4 text-blue-400 shrink-0"></i>
+    <span id="toastMessage">הודעה</span>
+    <button id="toastUndoBtn" type="button" class="hidden mr-2 bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded-md font-bold text-[11px] transition-all flex items-center gap-1 shrink-0 shadow-xs">
+      <i data-lucide="undo-2" class="w-3 h-3"></i>
+      <span>בטל</span>
+    </button>
+  </div>
+
+  <!-- App Logic -->
+  <script src="./app.js?v=20261026_08"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+/* SmartCal Linker - Custom Enhancements */
+@import url('https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;500;600;700;800&family=Heebo:wght@300;400;500;700;800&display=swap');
+
+:root {
+  --google-blue: #1a73e8;
+  --google-blue-hover: #1557b0;
+  --google-red: #ea4335;
+  --google-yellow: #fbbc04;
+  --google-green: #34a853;
+}
+
+html, body {
+  direction: rtl;
+  text-align: right;
+  font-family: 'Assistant', 'Heebo', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* אכיפת יישור לימין לכל הרכיבים ב-RTL */
+input, select, textarea, label, p, h1, h2, h3, h4, span, div {
+  text-align: right;
+}
+
+/* שדות טקסט בלועזית (כמו מפתח API, אימיילים, לינקים) יהיו מיושרים לשמאל */
+input[dir="ltr"], textarea[dir="ltr"] {
+  direction: ltr !important;
+  text-align: left !important;
+}
+
+/* התאמת select ותיבות בחירה לעברית */
+select {
+  text-align: right;
+  text-align-last: right;
+  direction: rtl;
+}
+
+option {
+  text-align: right;
+  direction: rtl;
+}
+
+/* placeholder בימין */
+::placeholder {
+  text-align: right;
+  direction: rtl;
+}
+
+input[dir="ltr"]::placeholder {
+  text-align: left;
+  direction: ltr;
+}
+
+/* אנימציית פעימה להקלטה קולית */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.7);
+  }
+  70% {
+    transform: scale(1.05);
+    box-shadow: 0 0 0 16px rgba(234, 67, 53, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(234, 67, 53, 0);
+  }
+}
+
+.recording-pulse {
+  animation: pulse-ring 1.5s infinite cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+/* אנימציית ספינר עדינה */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-custom {
+  animation: spin 1s linear infinite;
+}
+
+/* התאמת גלילה חלקה */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f3f4;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #dadce0;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #bdc1c6;
+}
+
+/* הסתרת פס גלילה בסרגל החשבונות במובייל תוך שמירה על גלילה חלקה במגע */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* התאמות מובייל ו-iOS: מניעת זום אוטומטי בעת לחיצה על שדות קלט ותמיכה ב-Safe Area */
+@media (max-width: 768px) {
+  input[type="text"],
+  input[type="password"],
+  input[type="email"],
+  input[type="date"],
+  input[type="time"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  body {
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+}

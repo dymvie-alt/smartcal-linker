@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="calGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4285F4" />
+      <stop offset="100%" stop-color="#1967D2" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#1a73e8" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  
+  <!-- Outer card -->
+  <rect x="40" y="56" width="432" height="400" rx="64" fill="#ffffff" filter="url(#shadow)" />
+  
+  <!-- Top header bar -->
+  <path d="M 40 120 C 40 84.65 68.65 56 104 56 L 408 56 C 443.35 56 472 84.65 472 120 L 472 168 L 40 168 Z" fill="url(#calGrad)" />
+  
+  <!-- Rings / Binders -->
+  <rect x="120" y="32" width="28" height="52" rx="14" fill="#34A853" />
+  <rect x="364" y="32" width="28" height="52" rx="14" fill="#EA4335" />
+  
+  <!-- Calendar Grid Dots / Details -->
+  <!-- Checkmark / Lightning Star (AI Smart) -->
+  <circle cx="160" cy="240" r="22" fill="#FBBC04" />
+  <circle cx="256" cy="240" r="22" fill="#4285F4" />
+  <circle cx="352" cy="240" r="22" fill="#34A853" />
+  
+  <circle cx="160" cy="328" r="22" fill="#EA4335" />
+  
+  <!-- Magic sparkle star representing AI linking -->
+  <path d="M 310 330 Q 340 330 350 300 Q 360 330 390 330 Q 360 330 350 360 Q 340 330 310 330 Z" fill="#4285F4" />
+  <circle cx="256" cy="328" r="22" fill="#1967D2" opacity="0.3" />
+</svg>
