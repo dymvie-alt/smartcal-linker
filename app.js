@@ -1477,7 +1477,10 @@ function setupSettingsModal() {
     };
 
     const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    const baseUrl = window.location.origin + window.location.pathname;
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const baseUrl = isLocal
+      ? 'https://dymvie-alt.github.io/smartcal-linker/'
+      : (window.location.origin + window.location.pathname);
     return `${baseUrl}#setup=${encoded}`;
   }
 
