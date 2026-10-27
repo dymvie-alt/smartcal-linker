@@ -3,7 +3,7 @@
  * מיועד להמרת קלט מולטימודלי (טקסט, תמונה, PDF, קול) לקישור יומן גוגל וקובץ ICS
  */
 
-// --- 1. הגדרות וחשבונות ידועים (תובנות 2יומן) ---
+// --- 1. הגדרות וחשבונות ידועים (תובנות 2יומן מול משתמש חיצוני חדש) ---
 const DEFAULT_ACCOUNTS = [
   { 
     id: 'dim', 
@@ -38,6 +38,16 @@ const DEFAULT_ACCOUNTS = [
   }
 ];
 
+// פרופיל התחלתי נקי למשתמש חיצוני חדש (למניעת חשיפת כתובות המייל המשפחתיות למשתמשים זרים)
+const PUBLIC_DEFAULT_ACCOUNTS = [
+  {
+    id: 'personal',
+    name: 'היומן האישי שלי',
+    email: '',
+    isGroup: false
+  }
+];
+
 function getStoredAccounts() {
   try {
     const raw = localStorage.getItem('smartcal_accounts');
@@ -46,8 +56,12 @@ function getStoredAccounts() {
       if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch (e) {}
-  localStorage.setItem('smartcal_accounts', JSON.stringify(DEFAULT_ACCOUNTS));
-  return [...DEFAULT_ACCOUNTS];
+
+  // בסביבת פיתוח מקומית או אם כבר קיים מפתח של בעל המערכת, נטען את יומני 2יומן; אחרת פרופיל נקי למשתמש חדש
+  const isLocalHost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const initialAccounts = isLocalHost ? DEFAULT_ACCOUNTS : PUBLIC_DEFAULT_ACCOUNTS;
+  localStorage.setItem('smartcal_accounts', JSON.stringify(initialAccounts));
+  return [...initialAccounts];
 }
 
 function saveStoredAccounts(accounts) {
@@ -116,6 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupOutlookAction();
   setupHistoryModal();
   setupSettingsModal();
+  setupOnboardingAndHelpModals();
   setupPwaInstallAndGlobalPaste();
 
   // קליטת תוכן ששותף מהנייד באמצעות Web Share Target (?text=...&url=...)
@@ -201,11 +216,14 @@ function renderAccountButtons() {
     const groupBadge = groupCount > 0
       ? `<span class="text-[10px] bg-purple-50 text-purple-700 border border-purple-200 px-1.5 py-0.5 rounded-md font-semibold">+${groupCount} מוזמנים</span>`
       : '';
+    const emailBadge = activeAcc.email
+      ? `<bdi dir="ltr" class="font-mono text-[11px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md border border-blue-200 font-semibold">${activeAcc.email}</bdi>`
+      : `<span class="text-[11px] text-gray-500">(יומן ברירת המחדל בדפדפן)</span>`;
 
     label.innerHTML = `
       <span class="inline-flex items-center gap-1.5 flex-wrap justify-end">
         <span class="font-bold text-gray-800">${activeAcc.name}</span>
-        <bdi dir="ltr" class="font-mono text-[11px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md border border-blue-200 font-semibold">${activeAcc.email || ''}</bdi>
+        ${emailBadge}
         ${groupBadge}
       </span>
     `;
@@ -537,8 +555,8 @@ function setupVoiceActions() {
 async function handleParseRequest() {
   const apiKey = getApiKey();
   if (!apiKey) {
-    showToast('נא להזין תחילה מפתח Gemini API בהגדרות', 'alert-circle');
-    openSettings();
+    showToast('כדי לחלץ אירועים, הגדר מפתח Gemini API אישי וחינמי (30 שניות)', 'info');
+    openOnboardingModal();
     return;
   }
 
@@ -1855,7 +1873,22 @@ function handleOpenOutlook() {
   showToast('האירוע נפתח ביומן Outlook Web', 'check');
 }
 
-// --- 13. הגדרות, ניהול מפתח API וניהול יומני יעד ---
+// --- 13. הגדרות, ניהול מפתח API, אבטחת שיתוף וניהול יומני יעד ---
+function isValidGeminiApiKey(key) {
+  if (!key) return false;
+  const trimmed = key.trim();
+  return trimmed.startsWith('AIza') && trimmed.length >= 30 && !/\s/.test(trimmed);
+}
+
+async function clearBackupConfigFromCacheStorage() {
+  try {
+    if ('caches' in window) {
+      const cache = await caches.open('smartcal-config-backup-v1');
+      await cache.delete('/__smartcal_saved_config__');
+    }
+  } catch (e) {}
+}
+
 function setupSettingsModal() {
   const modal = document.getElementById('settingsModal');
   const openBtn = document.getElementById('openSettingsBtn');
@@ -1863,8 +1896,12 @@ function setupSettingsModal() {
   const saveBtn = document.getElementById('saveSettingsBtn');
   const apiKeyInput = document.getElementById('apiKeyInput');
   const modelSelect = document.getElementById('modelSelect');
+  const toggleShowKeyBtn = document.getElementById('toggleShowApiKeyBtn');
+  const disconnectKeyBtn = document.getElementById('disconnectApiKeyBtn');
+  const openOnboardingFromSettingsBtn = document.getElementById('openOnboardingFromSettingsBtn');
 
   openBtn.addEventListener('click', () => {
+    apiKeyInput.type = 'password';
     apiKeyInput.value = getApiKey();
     modelSelect.value = getModel();
     renderAccountsManagerList();
@@ -1880,21 +1917,53 @@ function setupSettingsModal() {
     if (e.target === modal) modal.classList.add('hidden');
   });
 
-  saveBtn.addEventListener('click', () => {
+  // הצגה/הסתרה של מפתח ה-API (עין)
+  if (toggleShowKeyBtn && apiKeyInput) {
+    toggleShowKeyBtn.addEventListener('click', () => {
+      const isPass = apiKeyInput.type === 'password';
+      apiKeyInput.type = isPass ? 'text' : 'password';
+    });
+  }
+
+  // ניתוק ומחיקה מלאה של מפתח ה-API מהמכשיר הנוכחי (לשמירה על שליטה וביטחון)
+  if (disconnectKeyBtn && apiKeyInput) {
+    disconnectKeyBtn.addEventListener('click', async () => {
+      apiKeyInput.value = '';
+      localStorage.removeItem('smartcal_api_key');
+      await clearBackupConfigFromCacheStorage();
+      showToast('מפתח ה-API נמחק ונותק ממכשיר זה בהצלחה', 'check');
+    });
+  }
+
+  // פתיחת מדריך שלב-אחר-שלב מתוך ההגדרות
+  if (openOnboardingFromSettingsBtn) {
+    openOnboardingFromSettingsBtn.addEventListener('click', () => {
+      modal.classList.add('hidden');
+      openOnboardingModal();
+    });
+  }
+
+  saveBtn.addEventListener('click', async () => {
     const key = apiKeyInput.value.trim();
     const model = modelSelect.value;
+    if (key && !isValidGeminiApiKey(key)) {
+      showToast('מפתח ה-API נראה לא תקין (מפתח Gemini מתחיל ב-AIzaSy)', 'alert-circle');
+      apiKeyInput.focus();
+      return;
+    }
     if (key) {
       localStorage.setItem('smartcal_api_key', key);
+      backupConfigToCacheStorage({
+        k: key,
+        m: model,
+        a: getStoredAccounts(),
+        c: currentAccountKey
+      });
     } else {
       localStorage.removeItem('smartcal_api_key');
+      await clearBackupConfigFromCacheStorage();
     }
     localStorage.setItem('smartcal_model', model);
-    backupConfigToCacheStorage({
-      k: key,
-      m: model,
-      a: getStoredAccounts(),
-      c: currentAccountKey
-    });
     modal.classList.add('hidden');
     showToast('ההגדרות נשמרו בהצלחה במכשיר', 'check');
   });
@@ -1937,14 +2006,27 @@ function setupSettingsModal() {
       }
 
       const accounts = getStoredAccounts();
-      const newId = 'acc_' + Date.now();
-      accounts.push({
-        id: newId,
-        name: name,
-        email: email,
-        isGroup: isGroup,
-        groupEmails: isGroup ? groupEmails : ''
-      });
+      // אם קיים רק יומן ברירת מחדל ריק של משתמש חדש, נחליף אותו ביומן האמיתי הראשון שהזין
+      if (accounts.length === 1 && accounts[0].id === 'personal' && !accounts[0].email) {
+        accounts[0] = {
+          id: 'acc_' + Date.now(),
+          name: name,
+          email: email,
+          isGroup: isGroup,
+          groupEmails: isGroup ? groupEmails : ''
+        };
+        currentAccountKey = accounts[0].id;
+        localStorage.setItem('smartcal_account', currentAccountKey);
+      } else {
+        const newId = 'acc_' + Date.now();
+        accounts.push({
+          id: newId,
+          name: name,
+          email: email,
+          isGroup: isGroup,
+          groupEmails: isGroup ? groupEmails : ''
+        });
+      }
 
       saveStoredAccounts(accounts);
       newNameInput.value = '';
@@ -1961,7 +2043,7 @@ function setupSettingsModal() {
     });
   }
 
-  // איפוס חשבונות לברירות מחדל
+  // איפוס חשבונות לברירות מחדל (2יומן)
   const resetAccountsBtn = document.getElementById('resetAccountsDefaultBtn');
   if (resetAccountsBtn) {
     resetAccountsBtn.addEventListener('click', () => {
@@ -1979,13 +2061,13 @@ function setupSettingsModal() {
     copySetupLinkBtn.addEventListener('click', () => {
       const currentKey = apiKeyInput.value.trim() || getApiKey();
       if (currentKey) localStorage.setItem('smartcal_api_key', currentKey);
-      const magicUrl = generateMagicSetupUrl(true);
+      const magicUrl = generateShareOrSyncUrl({ includeKey: true, includeAccounts: true, requireKey: true });
       if (!magicUrl) {
         apiKeyInput.focus();
         return;
       }
       navigator.clipboard.writeText(magicUrl).then(() => {
-        showToast('קישור ההגדרה הועתק! שלח לעצמך בוואטסאפ ופתח בנייד', 'check');
+        showToast('קישור הסנכרון האישי הועתק! (מכיל מפתח API - שלח למכשיר שלך בלבד)', 'check');
       }).catch(() => {
         showToast('לא ניתן להעתיק ללוח הגזירים', 'alert-circle');
       });
@@ -1998,44 +2080,57 @@ function setupSettingsModal() {
       const currentKey = apiKeyInput.value.trim() || getApiKey();
       if (currentKey) localStorage.setItem('smartcal_api_key', currentKey);
       modal.classList.add('hidden');
-      openDedicatedQrModal();
+      openDedicatedQrModal('personal');
     });
   }
 }
 
-// בניית קישור סנכרון קומפקטי במיוחד (#setup=...) לקריאה מיידית במצלמת הנייד
-function generateMagicSetupUrl(requireKey = false) {
+// --- 13ב. מנגנון שיתוף מבוקר (Safe Share לחברים מול סנכרון אישי מוגן) ---
+let qrShareMode = 'safe'; // 'safe' (ללא מפתח - ברירת מחדל) | 'personal' (סנכרון למכשיר שלי)
+let qrPersonalIncludeAccounts = true;
+let qrPersonalIncludeApiKey = false; // כבוי כברירת מחדל להגנה מקסימלית עד סימון מפורש
+
+function getCleanPublicAppUrl() {
+  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  return isLocal
+    ? 'https://dymvie-alt.github.io/smartcal-linker/'
+    : (window.location.origin + window.location.pathname);
+}
+
+// בניית קישור שיתוף נקי (למשתמש חדש) או קישור סנכרון אישי (#setup=...)
+function generateShareOrSyncUrl({ includeKey = false, includeAccounts = false, requireKey = false } = {}) {
+  const baseUrl = getCleanPublicAppUrl();
+
+  // במצב שיתוף נקי לחברים - תמיד מחזיר כתובת נקייה ב-100% ללא שום מידע אישי!
+  if (!includeKey && !includeAccounts) {
+    return baseUrl;
+  }
+
   const apiKeyInput = document.getElementById('apiKeyInput');
   const modelSelect = document.getElementById('modelSelect');
   const currentKey = (apiKeyInput?.value?.trim()) || getApiKey();
 
-  if (requireKey && !currentKey) {
-    showToast('נא להזין תחילה מפתח Gemini API לפני יצירת קישור סנכרון', 'alert-circle');
+  if (requireKey && includeKey && !currentKey) {
+    showToast('נא להזין תחילה מפתח Gemini API לפני יצירת קישור סנכרון עם מפתח', 'alert-circle');
     return null;
   }
 
-  if (currentKey) {
-    localStorage.setItem('smartcal_api_key', currentKey);
+  const payload = {};
+  if (includeKey && currentKey) {
+    payload.k = currentKey;
   }
   const currentMod = modelSelect?.value || getModel();
-  if (currentMod) {
-    localStorage.setItem('smartcal_model', currentMod);
+  if (includeKey && currentMod && currentMod !== 'gemini-3.8-flash') {
+    payload.m = currentMod;
   }
-
-  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-  const baseUrl = isLocal
-    ? 'https://dymvie-alt.github.io/smartcal-linker/'
-    : (window.location.origin + window.location.pathname);
-
-  // בניית מטען (Payload) מינימלי כדי שברקוד ה-QR יהיה גדול, חד ונקרא בשבריר שנייה
-  const payload = {};
-  if (currentKey) payload.k = currentKey;
-  if (currentMod && currentMod !== 'gemini-3.8-flash') payload.m = currentMod;
-  if (currentAccountKey && currentAccountKey !== 'dim') payload.c = currentAccountKey;
-
-  const storedAccs = getStoredAccounts();
-  if (JSON.stringify(storedAccs) !== JSON.stringify(DEFAULT_ACCOUNTS)) {
-    payload.a = storedAccs;
+  if (includeAccounts) {
+    const storedAccs = getStoredAccounts();
+    if (storedAccs.length > 0) {
+      payload.a = storedAccs;
+    }
+    if (currentAccountKey) {
+      payload.c = currentAccountKey;
+    }
   }
 
   if (Object.keys(payload).length === 0) {
@@ -2046,69 +2141,141 @@ function generateMagicSetupUrl(requireKey = false) {
   return `${baseUrl}#setup=${encoded}`;
 }
 
-// פתיחת חלון ה-QR הייעודי בלחיצה אחת ורינדור ברקוד חד וברור
-function openDedicatedQrModal() {
+// פתיחת חלון ה-QR והשיתוף (ברירת מחדל: מצב 'safe' נקי לחלוטין ממפתח API!)
+function openDedicatedQrModal(initialMode = 'safe') {
   const qrModal = document.getElementById('mobileQrModal');
   if (!qrModal) return;
 
+  qrShareMode = initialMode === 'personal' ? 'personal' : 'safe';
+  // גם כשנכנסים למצב אישי, נאפשר שליטה מלאה בצ'קבוקסים
+  qrPersonalIncludeAccounts = true;
+  qrPersonalIncludeApiKey = initialMode === 'personal' && !!getApiKey();
+
+  updateQrModeTabsUI();
   renderDedicatedQrCode();
   qrModal.classList.remove('hidden');
   if (window.lucide) window.lucide.createIcons();
 }
 
+function updateQrModeTabsUI() {
+  const safeBtn = document.getElementById('qrModeSafeBtn');
+  const personalBtn = document.getElementById('qrModePersonalBtn');
+  if (!safeBtn || !personalBtn) return;
+
+  if (qrShareMode === 'safe') {
+    safeBtn.className = 'py-2 px-2 rounded-lg font-bold bg-white text-emerald-700 shadow-xs transition-all flex items-center justify-center gap-1.5';
+    personalBtn.className = 'py-2 px-2 rounded-lg font-semibold text-gray-600 hover:text-gray-900 transition-all flex items-center justify-center gap-1.5';
+  } else {
+    personalBtn.className = 'py-2 px-2 rounded-lg font-bold bg-white text-amber-800 shadow-xs transition-all flex items-center justify-center gap-1.5';
+    safeBtn.className = 'py-2 px-2 rounded-lg font-semibold text-gray-600 hover:text-gray-900 transition-all flex items-center justify-center gap-1.5';
+  }
+}
+
+function getActiveQrUrl() {
+  if (qrShareMode === 'safe') {
+    return getCleanPublicAppUrl();
+  }
+  return generateShareOrSyncUrl({
+    includeKey: qrPersonalIncludeApiKey,
+    includeAccounts: qrPersonalIncludeAccounts,
+    requireKey: false
+  });
+}
+
 function renderDedicatedQrCode() {
   const banner = document.getElementById('qrKeyStatusBanner');
   const canvasBox = document.getElementById('dedicatedQrCanvas');
+  const captionEl = document.getElementById('qrCaptionText');
+  const copyBtnText = document.getElementById('copyQrLinkBtnText');
+  const waBtnText = document.getElementById('shareWhatsAppBtnText');
+  const footerBox = document.getElementById('qrFooterHelpBox');
   if (!banner || !canvasBox) return;
 
-  const hasKey = !!getApiKey();
-  if (hasKey) {
-    banner.className = 'rounded-xl p-2.5 text-xs border bg-emerald-50 border-emerald-200 text-emerald-900 flex items-center gap-2';
+  if (qrShareMode === 'safe') {
+    // מצב 1 (ברירת מחדל): שיתוף בטוח לחבר ללא מפתח API וללא יומנים אישיים
+    banner.className = 'rounded-xl p-3 text-xs border bg-emerald-50/90 border-emerald-200 text-emerald-950 space-y-1';
     banner.innerHTML = `
-      <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-600 shrink-0"></i>
-      <span><strong>מוכן לסריקה:</strong> הברקוד כולל את מפתח ה-API והיומנים שלך ויעביר אותם אוטומטית לנייד.</span>
-    `;
-  } else {
-    banner.className = 'rounded-xl p-2.5 text-xs border bg-amber-50 border-amber-200 text-amber-900 space-y-2';
-    banner.innerHTML = `
-      <p class="font-semibold flex items-center gap-1.5">
-        <i data-lucide="key" class="w-3.5 h-3.5 text-amber-600 shrink-0"></i>
-        <span>הדבק מפתח API כדי שיוגדר אוטומטית בסריקה:</span>
+      <div class="font-bold flex items-center gap-1.5 text-emerald-900">
+        <i data-lucide="shield-check" class="w-4 h-4 text-emerald-600 shrink-0"></i>
+        <span>שיתוף מוגן לחברים ומשתמשים חדשים (ללא מפתח API)</span>
+      </div>
+      <p class="text-[11px] text-emerald-800 leading-relaxed">
+        הקישור והברקוד שלהלן <strong>נקיים לחלוטין</strong>. מפתח ה-API האישי שלך והיומנים שלך נשארים אצלך בלבד, והמשתמש החדש יתבקש להזין מפתח חינמי משלו.
       </p>
-      <div class="flex gap-1.5">
-        <input type="password" id="inlineQrApiKeyInput" dir="ltr" placeholder="AIzaSy..." class="flex-1 text-xs rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 font-mono text-gray-900 focus:outline-none focus:border-blue-500">
-        <button type="button" id="inlineQrSaveKeyBtn" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-[11px] shrink-0">שמור ועדכן QR</button>
+    `;
+    if (captionEl) captionEl.textContent = 'סרוק לפתיחת האפליקציה הנקייה (ללא חשיפת המפתח שלך)';
+    if (copyBtnText) copyBtnText.textContent = 'העתק קישור נקי לאפליקציה';
+    if (waBtnText) waBtnText.textContent = 'שלח הזמנה בוואטסאפ לחבר';
+    if (footerBox) {
+      footerBox.innerHTML = `
+        <p class="font-bold text-gray-800">מה יראה החבר שיקבל את הקישור?</p>
+        <p>1. האפליקציה תיפתח אצלו נקייה לחלוטין (ללא המפתח וללא המיילים שלך).</p>
+        <p>2. יופיע לו אשף קצר של 30 שניות להוצאת מפתח חינמי משלו מ-Google והגדרת היומן האישי שלו.</p>
+      `;
+    }
+  } else {
+    // מצב 2: סנכרון אישי למכשיר שלי (כולל בחירה מפורשת של יומנים ומפתח API)
+    const hasKey = !!getApiKey();
+    banner.className = 'rounded-xl p-3 text-xs border bg-amber-50/90 border-amber-200 text-amber-950 space-y-2';
+    banner.innerHTML = `
+      <div class="font-bold flex items-center gap-1.5 text-amber-900">
+        <i data-lucide="lock" class="w-4 h-4 text-amber-600 shrink-0"></i>
+        <span>סנכרון אישי למכשיר שלך / מעגל מורשה בלבד:</span>
+      </div>
+      <div class="space-y-1.5 pt-0.5">
+        <label class="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-gray-800">
+          <input type="checkbox" id="qrIncludeAccountsCheck" class="rounded text-blue-600 w-3.5 h-3.5" ${qrPersonalIncludeAccounts ? 'checked' : ''}>
+          <span>כלול את רשימת היומנים שלי (${getStoredAccounts().length} יומנים)</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer text-[11px] font-semibold ${hasKey ? 'text-red-800' : 'text-gray-400'}">
+          <input type="checkbox" id="qrIncludeApiKeyCheck" class="rounded text-red-600 w-3.5 h-3.5" ${qrPersonalIncludeApiKey && hasKey ? 'checked' : ''} ${!hasKey ? 'disabled' : ''}>
+          <span>כלול את מפתח ה-API האישי שלי ${hasKey ? '(אזהרה: אל תשתף עם זרים!)' : '(לא מוגדר כרגע מפתח)'}</span>
+        </label>
       </div>
     `;
-    const inlineInput = banner.querySelector('#inlineQrApiKeyInput');
-    const inlineBtn = banner.querySelector('#inlineQrSaveKeyBtn');
-    if (inlineBtn && inlineInput) {
-      inlineBtn.addEventListener('click', () => {
-        const val = inlineInput.value.trim();
-        if (!val) {
-          showToast('נא להדביק מפתח API תקין', 'alert-circle');
-          return;
-        }
-        localStorage.setItem('smartcal_api_key', val);
-        const settingsKeyInput = document.getElementById('apiKeyInput');
-        if (settingsKeyInput) settingsKeyInput.value = val;
-        renderDedicatedQrCode();
-        showToast('המפתח נשמר והוטמע בברקוד ה-QR!', 'check');
-      });
+
+    const accCheck = banner.querySelector('#qrIncludeAccountsCheck');
+    const keyCheck = banner.querySelector('#qrIncludeApiKeyCheck');
+    accCheck?.addEventListener('change', (e) => {
+      qrPersonalIncludeAccounts = e.target.checked;
+      renderDedicatedQrCode();
+    });
+    keyCheck?.addEventListener('change', (e) => {
+      qrPersonalIncludeApiKey = e.target.checked;
+      renderDedicatedQrCode();
+    });
+
+    if (captionEl) {
+      captionEl.textContent = qrPersonalIncludeApiKey
+        ? '⚠️ ברקוד זה מכיל את מפתח ה-API האישי שלך — סרוק במכשיר שלך בלבד!'
+        : 'סרוק להעברת רשימת היומנים שלך (ללא מפתח API)';
+    }
+    if (copyBtnText) {
+      copyBtnText.textContent = qrPersonalIncludeApiKey ? 'העתק קישור סנכרון אישי (כולל מפתח)' : 'העתק קישור יומנים בלבד';
+    }
+    if (waBtnText) {
+      waBtnText.textContent = 'שלח קישור סנכרון לעצמי בוואטסאפ';
+    }
+    if (footerBox) {
+      footerBox.innerHTML = `
+        <p class="font-bold text-gray-800">איך שומרים כאפליקציה בטלפון האישי שלך?</p>
+        <p>1. סרוק את הברקוד עם מצלמת הטלפון שלך — ההגדרות שבחרת יוטמעו אוטומטית.</p>
+        <p>2. בטלפון, לחץ על <strong>"הוסף למסך הבית"</strong> בראש הדף.</p>
+      `;
     }
   }
 
-  const magicUrl = generateMagicSetupUrl(false);
-  if (typeof window.qrcode === 'function' && magicUrl) {
+  const targetUrl = getActiveQrUrl();
+  if (typeof window.qrcode === 'function' && targetUrl) {
     try {
       const qr = window.qrcode(0, 'L');
-      qr.addData(magicUrl);
+      qr.addData(targetUrl);
       qr.make();
       canvasBox.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
       const svgEl = canvasBox.querySelector('svg');
       if (svgEl) {
-        svgEl.style.width = '200px';
-        svgEl.style.height = '200px';
+        svgEl.style.width = '195px';
+        svgEl.style.height = '195px';
       }
     } catch (err) {
       console.error('QR generation error:', err);
@@ -2117,6 +2284,119 @@ function renderDedicatedQrCode() {
   }
 
   if (window.lucide) window.lucide.createIcons();
+}
+
+// --- 13ג. אשף כניסה למשתמש חדש (Onboarding) ומודל עזרה ומדריך (?) ---
+function openOnboardingModal() {
+  const modal = document.getElementById('onboardingModal');
+  if (!modal) return;
+
+  const keyInput = document.getElementById('onboardingApiKeyInput');
+  if (keyInput) keyInput.value = getApiKey();
+
+  const accounts = getStoredAccounts();
+  const firstAcc = accounts[0];
+  const nameInput = document.getElementById('onboardingUserNameInput');
+  const emailInput = document.getElementById('onboardingUserEmailInput');
+  if (nameInput && firstAcc && firstAcc.id === 'personal') {
+    nameInput.value = firstAcc.name === 'היומן האישי שלי' ? '' : firstAcc.name;
+  }
+  if (emailInput && firstAcc && firstAcc.email && firstAcc.id === 'personal') {
+    emailInput.value = firstAcc.email;
+  }
+
+  modal.classList.remove('hidden');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function openHelpModal() {
+  const modal = document.getElementById('helpModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function setupOnboardingAndHelpModals() {
+  const onboardingModal = document.getElementById('onboardingModal');
+  const closeOnboardingBtn = document.getElementById('closeOnboardingBtn');
+  const skipOnboardingBtn = document.getElementById('skipOnboardingBtn');
+  const completeOnboardingBtn = document.getElementById('completeOnboardingBtn');
+  const openHelpFromOnboardingBtn = document.getElementById('openHelpFromOnboardingBtn');
+
+  const helpModal = document.getElementById('helpModal');
+  const openHelpBtn = document.getElementById('openHelpBtn');
+  const closeHelpBtn = document.getElementById('closeHelpBtn');
+  const closeHelpBottomBtn = document.getElementById('closeHelpBottomBtn');
+  const openOnboardingFromHelpBtn = document.getElementById('openOnboardingFromHelpBtn');
+
+  closeOnboardingBtn?.addEventListener('click', () => onboardingModal?.classList.add('hidden'));
+  skipOnboardingBtn?.addEventListener('click', () => onboardingModal?.classList.add('hidden'));
+  onboardingModal?.addEventListener('click', (e) => {
+    if (e.target === onboardingModal) onboardingModal.classList.add('hidden');
+  });
+
+  if (completeOnboardingBtn) {
+    completeOnboardingBtn.addEventListener('click', () => {
+      const keyInput = document.getElementById('onboardingApiKeyInput');
+      const nameInput = document.getElementById('onboardingUserNameInput');
+      const emailInput = document.getElementById('onboardingUserEmailInput');
+
+      const key = (keyInput?.value || '').trim();
+      if (!isValidGeminiApiKey(key)) {
+        showToast('נא להדביק מפתח Gemini API תקין (מתחיל ב-AIzaSy)', 'alert-circle');
+        keyInput?.focus();
+        return;
+      }
+
+      localStorage.setItem('smartcal_api_key', key);
+
+      // אם המשתמש החדש הזין שם או כתובת Gmail אישית, נעדכן עבורו את יומן היעד האישי
+      const userName = (nameInput?.value || '').trim();
+      const userEmail = (emailInput?.value || '').trim();
+      let accounts = getStoredAccounts();
+
+      if (userEmail && userEmail.includes('@')) {
+        const displayName = userName ? `${userName} (אישי)` : 'היומן האישי שלי';
+        if (accounts.length === 1 && accounts[0].id === 'personal') {
+          accounts[0] = { id: 'personal', name: displayName, email: userEmail, isGroup: false };
+        } else if (!accounts.some(a => a.email.toLowerCase() === userEmail.toLowerCase())) {
+          const newId = 'acc_' + Date.now();
+          accounts.unshift({ id: newId, name: displayName, email: userEmail, isGroup: false });
+          currentAccountKey = newId;
+          localStorage.setItem('smartcal_account', currentAccountKey);
+        }
+        saveStoredAccounts(accounts);
+        renderAccountButtons();
+      }
+
+      backupConfigToCacheStorage({
+        k: key,
+        m: getModel(),
+        a: getStoredAccounts(),
+        c: currentAccountKey
+      });
+
+      onboardingModal?.classList.add('hidden');
+      showToast('המפתח האישי נשמר בהצלחה! כעת ניתן לחלץ אירועים', 'check');
+    });
+  }
+
+  openHelpBtn?.addEventListener('click', openHelpModal);
+  closeHelpBtn?.addEventListener('click', () => helpModal?.classList.add('hidden'));
+  closeHelpBottomBtn?.addEventListener('click', () => helpModal?.classList.add('hidden'));
+  helpModal?.addEventListener('click', (e) => {
+    if (e.target === helpModal) helpModal.classList.add('hidden');
+  });
+
+  openHelpFromOnboardingBtn?.addEventListener('click', () => {
+    onboardingModal?.classList.add('hidden');
+    openHelpModal();
+  });
+
+  openOnboardingFromHelpBtn?.addEventListener('click', () => {
+    helpModal?.classList.add('hidden');
+    openOnboardingModal();
+  });
 }
 
 // שמירה וגיבוי של ההגדרות גם ב-CacheStorage כדי שאפליקציית מסך הבית בנייד תשתף אותן
@@ -2148,10 +2428,12 @@ async function restoreConfigFromCacheStorageIfNeeded() {
             localStorage.setItem('smartcal_account', payload.c);
             renderAccountButtons();
           }
+          return true;
         }
       }
     }
   } catch (e) {}
+  return false;
 }
 
 // קליטת קישור סנכרון מהיר (#setup=...) בטעינת הדף וניקוי מיידי משורת הכתובת
@@ -2185,7 +2467,7 @@ function checkMagicSetupHash() {
       history.replaceState(null, '', window.location.pathname + window.location.search);
 
       setTimeout(() => {
-        showToast('המפתח וכל היומנים הוגדרו במכשיר זה בהצלחה!', 'check');
+        showToast('ההגדרות סונכרנו למכשיר זה בהצלחה!', 'check');
       }, 400);
     }
   } catch (err) {
@@ -2218,7 +2500,8 @@ function checkSharedIncomingContent() {
           handleParseRequest();
         }, 350);
       } else {
-        showToast('התוכן שותף! הזן מפתח API בהגדרות כדי לחלץ את האירוע', 'info');
+        openOnboardingModal();
+        showToast('התוכן שותף! הגדר מפתח API אישי כדי לחלץ את האירוע', 'info');
       }
     }
   } catch (err) {
@@ -2226,16 +2509,33 @@ function checkSharedIncomingContent() {
   }
 }
 
-// ניהול חלון ה-QR, התקנת PWA בנייד בלבד, והדבקת תמונה ישירה (Ctrl+V)
+// ניהול חלון ה-QR והשיתוף המאובטח, התקנת PWA בנייד בלבד, והדבקת תמונה ישירה (Ctrl+V)
 function setupPwaInstallAndGlobalPaste() {
   const openQrHeaderBtn = document.getElementById('openQrHeaderBtn');
   const qrModal = document.getElementById('mobileQrModal');
   const closeQrModalBtn = document.getElementById('closeQrModalBtn');
+  const qrModeSafeBtn = document.getElementById('qrModeSafeBtn');
+  const qrModePersonalBtn = document.getElementById('qrModePersonalBtn');
   const copyDedicatedQrLinkBtn = document.getElementById('copyDedicatedQrLinkBtn');
+  const shareWhatsAppAppBtn = document.getElementById('shareWhatsAppAppBtn');
   const installBtn = document.getElementById('installPwaBtn');
 
   if (openQrHeaderBtn) {
-    openQrHeaderBtn.addEventListener('click', openDedicatedQrModal);
+    openQrHeaderBtn.addEventListener('click', () => openDedicatedQrModal('safe'));
+  }
+  if (qrModeSafeBtn) {
+    qrModeSafeBtn.addEventListener('click', () => {
+      qrShareMode = 'safe';
+      updateQrModeTabsUI();
+      renderDedicatedQrCode();
+    });
+  }
+  if (qrModePersonalBtn) {
+    qrModePersonalBtn.addEventListener('click', () => {
+      qrShareMode = 'personal';
+      updateQrModeTabsUI();
+      renderDedicatedQrCode();
+    });
   }
   if (closeQrModalBtn && qrModal) {
     closeQrModalBtn.addEventListener('click', () => qrModal.classList.add('hidden'));
@@ -2247,13 +2547,37 @@ function setupPwaInstallAndGlobalPaste() {
   }
   if (copyDedicatedQrLinkBtn) {
     copyDedicatedQrLinkBtn.addEventListener('click', () => {
-      const magicUrl = generateMagicSetupUrl(true);
-      if (!magicUrl) return;
-      navigator.clipboard.writeText(magicUrl).then(() => {
-        showToast('הקישור הישיר הועתק! שלח בוואטסאפ ופתח בנייד', 'check');
+      const targetUrl = getActiveQrUrl();
+      if (!targetUrl) return;
+      navigator.clipboard.writeText(targetUrl).then(() => {
+        const msg = qrShareMode === 'safe'
+          ? 'קישור נקי לאפליקציה הועתק! בטוח לשליחה לכל חבר (ללא המפתח שלך)'
+          : 'קישור הסנכרון האישי הועתק ללוח!';
+        showToast(msg, 'check');
       }).catch(() => {
         showToast('לא ניתן להעתיק ללוח הגזירים', 'alert-circle');
       });
+    });
+  }
+  if (shareWhatsAppAppBtn) {
+    shareWhatsAppAppBtn.addEventListener('click', () => {
+      const targetUrl = getActiveQrUrl();
+      if (!targetUrl) return;
+      let waText = '';
+      if (qrShareMode === 'safe') {
+        waText = [
+          'היי! שיתפתי איתך את *SmartCal Linker (יומן חכם)* 🗓️✨',
+          'אפליקציה שהופכת כל הודעת וואטסאפ, לינק, תמונת הזמנה, PDF או הקלטה קולית לאירוע מוכן ביומן Google בלחיצה אחת.',
+          '',
+          `🔗 כניסה לאפליקציה: ${targetUrl}`,
+          '',
+          '💡 בכניסה הראשונה יופיע לך אשף קצר (30 שניות) להוצאת מפתח Gemini AI אישי וחינמי משלך מ-Google.'
+        ].join('\n');
+      } else {
+        waText = `קישור סנכרון אישי ל-SmartCal Linker:\n${targetUrl}`;
+      }
+      const waUrl = `https://wa.me/?text=${encodeURIComponent(waText)}`;
+      window.open(waUrl, '_blank');
     });
   }
 
@@ -2296,7 +2620,7 @@ function setupPwaInstallAndGlobalPaste() {
   // קיצור מקלדת גלובלי: Escape לסגירת כל חלון מודאלי פתוח
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      ['mobileQrModal', 'confirmResetModal', 'historyModal', 'settingsModal'].forEach((id) => {
+      ['mobileQrModal', 'confirmResetModal', 'historyModal', 'settingsModal', 'onboardingModal', 'helpModal'].forEach((id) => {
         const el = document.getElementById(id);
         if (el && !el.classList.contains('hidden')) {
           el.classList.add('hidden');
@@ -2564,10 +2888,12 @@ function getModel() {
 function loadSavedSettings() {
   const key = getApiKey();
   if (!key) {
-    // אם אין מפתח, נציג חיווי עדין בהתחלה
+    // המתנה קצרה למקרה שמתבצע שחזור מ-CacheStorage, ואם עדיין אין מפתח - פתיחת אשף הכניסה למשתמש חדש
     setTimeout(() => {
-      showToast('ברוך הבא! לחץ על גלגל השיניים להזנת מפתח API', 'info');
-    }, 1200);
+      if (!getApiKey()) {
+        openOnboardingModal();
+      }
+    }, 600);
   }
 }
 
