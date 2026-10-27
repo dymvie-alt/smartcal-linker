@@ -48,17 +48,28 @@ const PUBLIC_DEFAULT_ACCOUNTS = [
   }
 ];
 
+function isUnconfiguredPublicPlaceholder(accs) {
+  return Array.isArray(accs) && accs.length === 1 && accs[0].id === 'personal' && !accs[0].email;
+}
+
 function getStoredAccounts() {
+  const isLocalHost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   try {
     const raw = localStorage.getItem('smartcal_accounts');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // בסביבה מקומית: אם נשמר בטעות הפרופיל הציבורי הריק, נשחזר אוטומטית את 5 יומני 2יומן
+        if (isLocalHost && isUnconfiguredPublicPlaceholder(parsed)) {
+          localStorage.setItem('smartcal_accounts', JSON.stringify(DEFAULT_ACCOUNTS));
+          return [...DEFAULT_ACCOUNTS];
+        }
+        return parsed;
+      }
     }
   } catch (e) {}
 
-  // בסביבת פיתוח מקומית או אם כבר קיים מפתח של בעל המערכת, נטען את יומני 2יומן; אחרת פרופיל נקי למשתמש חדש
-  const isLocalHost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  // בסביבת פיתוח מקומית נטען את 5 יומני 2יומן; בענן הציבורי ללא סנכרון נטען פרופיל נקי למשתמש חדש
   const initialAccounts = isLocalHost ? DEFAULT_ACCOUNTS : PUBLIC_DEFAULT_ACCOUNTS;
   localStorage.setItem('smartcal_accounts', JSON.stringify(initialAccounts));
   return [...initialAccounts];
@@ -2126,7 +2137,12 @@ function generateShareOrSyncUrl({ includeKey = false, includeAccounts = false, r
   if (includeAccounts) {
     const storedAccs = getStoredAccounts();
     if (storedAccs.length > 0) {
-      payload.a = storedAccs;
+      // אופטימיזציית QR: אם מדובר ב-5 יומני ברירת המחדל של 2יומן, נשלח דגל קומפקטי (f:1) כדי שהברקוד יהיה קל ומהיר לסריקה!
+      if (JSON.stringify(storedAccs) === JSON.stringify(DEFAULT_ACCOUNTS)) {
+        payload.f = 1;
+      } else {
+        payload.a = storedAccs;
+      }
     }
     if (currentAccountKey) {
       payload.c = currentAccountKey;
@@ -2214,13 +2230,13 @@ function renderDedicatedQrCode() {
       `;
     }
   } else {
-    // מצב 2: סנכרון אישי למכשיר שלי (כולל בחירה מפורשת של יומנים ומפתח API)
+    // מצב 2: סנכרון אישי למכשיר שלי / משפחה (כולל בחירה מפורשת של יומני 2יומן ומפתח ה-API)
     const hasKey = !!getApiKey();
     banner.className = 'rounded-xl p-3 text-xs border bg-amber-50/90 border-amber-200 text-amber-950 space-y-2';
     banner.innerHTML = `
       <div class="font-bold flex items-center gap-1.5 text-amber-900">
         <i data-lucide="lock" class="w-4 h-4 text-amber-600 shrink-0"></i>
-        <span>סנכרון אישי למכשיר שלך / מעגל מורשה בלבד:</span>
+        <span>סנכרון אישי למכשיר שלך / בני משפחה (2יומן):</span>
       </div>
       <div class="space-y-1.5 pt-0.5">
         <label class="flex items-center gap-2 cursor-pointer text-[11px] font-medium text-gray-800">
@@ -2229,19 +2245,45 @@ function renderDedicatedQrCode() {
         </label>
         <label class="flex items-center gap-2 cursor-pointer text-[11px] font-semibold ${hasKey ? 'text-red-800' : 'text-gray-400'}">
           <input type="checkbox" id="qrIncludeApiKeyCheck" class="rounded text-red-600 w-3.5 h-3.5" ${qrPersonalIncludeApiKey && hasKey ? 'checked' : ''} ${!hasKey ? 'disabled' : ''}>
-          <span>כלול את מפתח ה-API האישי שלי ${hasKey ? '(אזהרה: אל תשתף עם זרים!)' : '(לא מוגדר כרגע מפתח)'}</span>
+          <span>כלול את מפתח ה-API האישי שלי ${hasKey ? '(למכשיר שלי / משפחה בלבד)' : '(לא מוגדר כרגע מפתח)'}</span>
         </label>
       </div>
+      ${!hasKey ? `
+        <div class="pt-1.5 border-t border-amber-200/70 space-y-1.5">
+          <p class="text-[11px] text-amber-900 font-medium">הדבק כאן מפתח Gemini API כדי לכלול אותו בברקוד הסנכרון:</p>
+          <div class="flex gap-1.5">
+            <input type="password" id="qrInlineKeyInput" dir="ltr" placeholder="AIzaSy..." class="flex-1 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-mono focus:outline-hidden focus:ring-2 focus:ring-amber-500">
+            <button type="button" id="qrInlineSaveKeyBtn" class="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition-all cursor-pointer shrink-0">שמור והטמע</button>
+          </div>
+        </div>
+      ` : ''}
     `;
 
     const accCheck = banner.querySelector('#qrIncludeAccountsCheck');
     const keyCheck = banner.querySelector('#qrIncludeApiKeyCheck');
+    const inlineKeyInput = banner.querySelector('#qrInlineKeyInput');
+    const inlineSaveKeyBtn = banner.querySelector('#qrInlineSaveKeyBtn');
+
     accCheck?.addEventListener('change', (e) => {
       qrPersonalIncludeAccounts = e.target.checked;
       renderDedicatedQrCode();
     });
     keyCheck?.addEventListener('change', (e) => {
       qrPersonalIncludeApiKey = e.target.checked;
+      renderDedicatedQrCode();
+    });
+    inlineSaveKeyBtn?.addEventListener('click', () => {
+      const val = (inlineKeyInput?.value || '').trim();
+      if (!isValidGeminiApiKey(val)) {
+        showToast('נא להזין מפתח Gemini API תקין (מתחיל ב-AIzaSy)', 'alert-circle');
+        inlineKeyInput?.focus();
+        return;
+      }
+      localStorage.setItem('smartcal_api_key', val);
+      const mainKeyInput = document.getElementById('apiKeyInput');
+      if (mainKeyInput) mainKeyInput.value = val;
+      qrPersonalIncludeApiKey = true;
+      showToast('המפתח נשמר והוטמע בברקוד הסנכרון!', 'check');
       renderDedicatedQrCode();
     });
 
@@ -2422,12 +2464,20 @@ async function restoreConfigFromCacheStorageIfNeeded() {
         if (payload && payload.k) {
           localStorage.setItem('smartcal_api_key', payload.k);
           if (payload.m) localStorage.setItem('smartcal_model', payload.m);
-          if (Array.isArray(payload.a) && payload.a.length > 0) saveStoredAccounts(payload.a);
+          if (payload.f === 1) {
+            saveStoredAccounts(DEFAULT_ACCOUNTS);
+          } else if (Array.isArray(payload.a) && payload.a.length > 0) {
+            saveStoredAccounts(payload.a);
+          } else if (isUnconfiguredPublicPlaceholder(getStoredAccounts())) {
+            saveStoredAccounts(DEFAULT_ACCOUNTS);
+          }
           if (payload.c) {
             currentAccountKey = payload.c;
             localStorage.setItem('smartcal_account', payload.c);
-            renderAccountButtons();
           }
+          loadSavedSettings();
+          renderAccountButtons();
+          document.getElementById('onboardingModal')?.classList.add('hidden');
           return true;
         }
       }
@@ -2452,22 +2502,30 @@ function checkMagicSetupHash() {
     if (payload && typeof payload === 'object') {
       if (payload.k) localStorage.setItem('smartcal_api_key', payload.k);
       if (payload.m) localStorage.setItem('smartcal_model', payload.m);
-      if (Array.isArray(payload.a) && payload.a.length > 0) {
+      if (payload.f === 1) {
+        saveStoredAccounts(DEFAULT_ACCOUNTS);
+      } else if (Array.isArray(payload.a) && payload.a.length > 0) {
         saveStoredAccounts(payload.a);
+      } else if (payload.k && isUnconfiguredPublicPlaceholder(getStoredAccounts())) {
+        // תאימות לאחור לקישורי סנכרון ישנים של 2יומן שהכילו מפתח ללא מערך חשבונות מפורש
+        saveStoredAccounts(DEFAULT_ACCOUNTS);
       }
       if (payload.c) {
         currentAccountKey = payload.c;
         localStorage.setItem('smartcal_account', payload.c);
+      } else if (payload.f === 1 || (payload.k && !payload.a)) {
+        currentAccountKey = 'dim';
+        localStorage.setItem('smartcal_account', 'dim');
       }
 
-      // גיבוי ל-CacheStorage כדי שגם פתיחה ממסך הבית בנייד תכיר את המפתח מיד
+      // גיבוי ל-CacheStorage כדי שגם פתיחה ממסך הבית בנייד תכיר את המפתח והיומנים מיד
       backupConfigToCacheStorage(payload);
 
       // מחיקה מיידית של ה-Hash משורת הכתובת ומההיסטוריה למניעת חשיפת המפתח
       history.replaceState(null, '', window.location.pathname + window.location.search);
 
       setTimeout(() => {
-        showToast('ההגדרות סונכרנו למכשיר זה בהצלחה!', 'check');
+        showToast('ההגדרות ויומני 2יומן סונכרנו למכשיר זה בהצלחה!', 'check');
       }, 400);
     }
   } catch (err) {
@@ -2533,6 +2591,8 @@ function setupPwaInstallAndGlobalPaste() {
   if (qrModePersonalBtn) {
     qrModePersonalBtn.addEventListener('click', () => {
       qrShareMode = 'personal';
+      qrPersonalIncludeAccounts = true;
+      qrPersonalIncludeApiKey = !!getApiKey();
       updateQrModeTabsUI();
       renderDedicatedQrCode();
     });
